@@ -96,58 +96,7 @@ PhysicalProperties ConfigLoader::parseSatellite(const json& j) {
     p.drag_area_m2     = getOrDefault(j, "drag_area_m2",     p.drag_area_m2);
     p.reflectivity     = getOrDefault(j, "reflectivity",     p.reflectivity);
     p.srp_area_m2      = getOrDefault(j, "srp_area_m2",      p.srp_area_m2);
-    if (j.contains("inertia_kgm2")) {
-        const auto& iv = j.at("inertia_kgm2");
-        if (iv.is_array() && iv.size() >= 3) {
-            p.inertia_kgm2 = {iv[0].get<double>(), iv[1].get<double>(), iv[2].get<double>()};
-        }
-    }
     return p;
-}
-
-FSWConfig ConfigLoader::parseFSW(const json& j) {
-    FSWConfig cfg;
-    cfg.enabled        = getOrDefaultB(j, "enabled",        cfg.enabled);
-    cfg.adcs_mode      = getOrDefaultS(j, "adcs_mode",      cfg.adcs_mode);
-    cfg.adcs_update_hz = getOrDefault(j,  "adcs_update_hz", cfg.adcs_update_hz);
-    cfg.od_update_hz   = getOrDefault(j,  "od_update_hz",   cfg.od_update_hz);
-
-    if (j.contains("sensors")) {
-        const auto& s = j.at("sensors");
-        if (s.contains("gps")) {
-            const auto& g = s.at("gps");
-            cfg.sensors.gps.enabled           = getOrDefaultB(g, "enabled",           cfg.sensors.gps.enabled);
-            cfg.sensors.gps.update_hz         = getOrDefault(g,  "update_hz",         cfg.sensors.gps.update_hz);
-            cfg.sensors.gps.position_noise_m  = getOrDefault(g,  "position_noise_m",  cfg.sensors.gps.position_noise_m);
-            cfg.sensors.gps.velocity_noise_ms = getOrDefault(g,  "velocity_noise_ms", cfg.sensors.gps.velocity_noise_ms);
-        }
-        if (s.contains("imu")) {
-            const auto& im = s.at("imu");
-            cfg.sensors.imu.enabled          = getOrDefaultB(im, "enabled",          cfg.sensors.imu.enabled);
-            cfg.sensors.imu.update_hz        = getOrDefault(im,  "update_hz",        cfg.sensors.imu.update_hz);
-            cfg.sensors.imu.gyro_noise_rad_s = getOrDefault(im,  "gyro_noise_rad_s", cfg.sensors.imu.gyro_noise_rad_s);
-            cfg.sensors.imu.gyro_bias_rad_s  = getOrDefault(im,  "gyro_bias_rad_s",  cfg.sensors.imu.gyro_bias_rad_s);
-        }
-        if (s.contains("star_tracker")) {
-            const auto& st = s.at("star_tracker");
-            cfg.sensors.star_tracker.enabled            = getOrDefaultB(st, "enabled",            cfg.sensors.star_tracker.enabled);
-            cfg.sensors.star_tracker.update_hz          = getOrDefault(st,  "update_hz",          cfg.sensors.star_tracker.update_hz);
-            cfg.sensors.star_tracker.attitude_noise_rad = getOrDefault(st,  "attitude_noise_rad", cfg.sensors.star_tracker.attitude_noise_rad);
-        }
-    }
-    if (j.contains("wheels")) {
-        const auto& w = j.at("wheels");
-        cfg.wheels.max_torque_Nm    = getOrDefault(w, "max_torque_Nm",   cfg.wheels.max_torque_Nm);
-        cfg.wheels.max_momentum_Nms = getOrDefault(w, "max_momentum_Nms",cfg.wheels.max_momentum_Nms);
-        if (w.contains("spin_axes")) {
-            cfg.wheels.spin_axes.clear();
-            for (const auto& ax : w.at("spin_axes")) {
-                if (ax.is_array() && ax.size() >= 3)
-                    cfg.wheels.spin_axes.push_back({ax[0].get<double>(), ax[1].get<double>(), ax[2].get<double>()});
-            }
-        }
-    }
-    return cfg;
 }
 
 PhysicsConfig ConfigLoader::parsePhysics(const json& j) {
@@ -238,7 +187,6 @@ SimConfig ConfigLoader::parseSimConfig(const json& j) {
     if (j.contains("satellite"))       cfg.satellite     = parseSatellite(j.at("satellite"));
     if (j.contains("forces"))         cfg.physics       = parsePhysics(j.at("forces"));
     if (j.contains("metrics"))        cfg.metrics       = parseMetrics(j.at("metrics"));
-    if (j.contains("flight_software")) cfg.fsw          = parseFSW(j.at("flight_software"));
 
     if (j.contains("ground_targets")) {
         for (const auto& t : j.at("ground_targets")) {

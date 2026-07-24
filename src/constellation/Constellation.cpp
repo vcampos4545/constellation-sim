@@ -43,7 +43,7 @@ Constellation Constellation::createWalker(const WalkerConfig& cfg, int start_id)
             const OrbitState state = elems.toStateVector(mu);
 
             PhysicalProperties props;  // uses defaults; caller should override if needed
-            plane.addSatellite(Satellite(global_id++, p, s, state, props, FSWConfig{}));
+            plane.addSatellite(Satellite(global_id++, p, s, state, props));
         }
         c.planes_.push_back(std::move(plane));
     }
@@ -91,7 +91,7 @@ Constellation Constellation::createCustom(const std::vector<SatelliteSpec>& spec
 
         PhysicalProperties props;  // caller overrides via SimulationEngine
         c.planes_[plane_idx_by_id[spec.plane_id]].addSatellite(
-            Satellite(i, spec.plane_id, spec.seat_id, state, props, FSWConfig{}));
+            Satellite(i, spec.plane_id, spec.seat_id, state, props));
     }
 
     c.rebuildSatPtrs();

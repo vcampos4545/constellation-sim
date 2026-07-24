@@ -102,7 +102,6 @@ private:
     std::vector<Vec3>      interp_pos_eci_;   // ECI positions [m]  — for telemetry
     std::vector<Vec3>      interp_vel_eci_;   // ECI velocities [m/s] — for telemetry
     std::vector<bool>      interp_ecl_;
-    std::vector<glm::quat> interp_att_;       // body-to-ECI attitude quaternions
     glm::vec3              interp_sun_{1.0f, 0.0f, 0.0f};
     glm::vec3              interp_moon_{0.0f, 1.0f, 0.0f};
     int                    lo_frame_idx_{-1};
@@ -110,13 +109,6 @@ private:
 
     // Trail ring-buffer per satellite
     std::vector<std::deque<glm::vec3>> trail_buf_;
-
-    // ---------------------------------------------------------------------------
-    // Attitude / sensor data ring buffers (for real-time plots)
-    // ---------------------------------------------------------------------------
-    struct AttSample { float omega_x, omega_y, omega_z, h_mag; };
-    static constexpr int ATT_BUF_SIZE = 256;
-    std::vector<std::deque<AttSample>> att_buf_;
 
     // ---------------------------------------------------------------------------
     // 2D Mercator ground track
@@ -146,8 +138,8 @@ private:
     // ---------------------------------------------------------------------------
     // Panel tab state
     // ---------------------------------------------------------------------------
-    enum class PanelTab { ADCS, Power, Thermal, Data, Faults, Viz };
-    PanelTab active_tab_{PanelTab::ADCS};
+    enum class PanelTab { Data, Power, Thermal, Faults, Viz };
+    PanelTab active_tab_{PanelTab::Data};
 
     // ---------------------------------------------------------------------------
     // Internal helpers

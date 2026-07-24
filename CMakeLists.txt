@@ -84,18 +84,6 @@ set(OUTPUT_SOURCES
   src/output/OutputManager.cpp
 )
 
-set(GNC_SOURCES
-  src/gnc/AttitudeDynamics.cpp
-  src/gnc/Guidance.cpp
-  src/gnc/AttitudeController.cpp
-  src/gnc/WheelAllocator.cpp
-  src/gnc/MEKF.cpp
-  src/gnc/FlightSoftwareStack.cpp
-  src/gnc/sensors/GPSModel.cpp
-  src/gnc/sensors/IMUModel.cpp
-  src/gnc/sensors/StarTrackerModel.cpp
-)
-
 # --------------------------------------------------------------------------
 # Core simulation library (headless, no GL dependency)
 # --------------------------------------------------------------------------
@@ -108,7 +96,6 @@ add_library(constellation_core STATIC
   ${METRICS_SOURCES}
   ${MONTECARLO_SOURCES}
   ${OUTPUT_SOURCES}
-  ${GNC_SOURCES}
 )
 
 target_include_directories(constellation_core PUBLIC src)

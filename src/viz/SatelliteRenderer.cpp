@@ -12,7 +12,6 @@
 #include <glm/gtc/quaternion.hpp>
 #include <cmath>
 #include <cstdio>
-#include <cfloat>
 #include <algorithm>
 #include <limits>
 
@@ -171,8 +170,6 @@ void SatelliteRenderer::buildInterpState()
 
     const int n = static_cast<int>(lo_frame.positions.size());
 
-    const bool has_att_data = (static_cast<int>(lo_frame.attitude_states.size()) == n);
-
     if (new_lo != lo_frame_idx_)
     {
         if (static_cast<int>(trail_buf_.size()) != n)
@@ -183,25 +180,6 @@ void SatelliteRenderer::buildInterpState()
             trail_buf_[i].push_back(eciToScene(lo_frame.positions[i]));
             while (static_cast<int>(trail_buf_[i].size()) > TRAIL_FRAMES + 1)
                 trail_buf_[i].pop_front();
-        }
-
-        // Attitude ring-buffer push (feeds the sensor plot panel)
-        if (has_att_data)
-        {
-            if (static_cast<int>(att_buf_.size()) != n)
-                att_buf_.assign(n, std::deque<AttSample>{});
-            for (int i = 0; i < n; ++i)
-            {
-                const AttitudeState &as = lo_frame.attitude_states[i];
-                AttSample s;
-                s.omega_x = static_cast<float>(as.omega.x);
-                s.omega_y = static_cast<float>(as.omega.y);
-                s.omega_z = static_cast<float>(as.omega.z);
-                s.h_mag = static_cast<float>(as.h_wheels.norm());
-                att_buf_[i].push_back(s);
-                while (static_cast<int>(att_buf_[i].size()) > ATT_BUF_SIZE)
-                    att_buf_[i].pop_front();
-            }
         }
 
         lo_frame_idx_ = new_lo;
@@ -253,32 +231,6 @@ void SatelliteRenderer::buildInterpState()
         else
         {
             interp_vel_eci_[i] = {};
-        }
-    }
-
-    // Attitude quaternion interpolation
-    interp_att_.assign(n, glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
-    if (has_att_data)
-    {
-        const bool hi_has_att = has_hi &&
-                                (static_cast<int>(hi_frame.attitude_states.size()) == n);
-        for (int i = 0; i < n; ++i)
-        {
-            const Quat &qa = lo_frame.attitude_states[i].attitude;
-            glm::quat ga(float(qa.w), float(qa.x), float(qa.y), float(qa.z));
-            if (hi_has_att)
-            {
-                const Quat &qb = hi_frame.attitude_states[i].attitude;
-                glm::quat gb(float(qb.w), float(qb.x), float(qb.y), float(qb.z));
-                // Short-path nlerp (cheap and smooth enough at display frame rates)
-                if (glm::dot(ga, gb) < 0.0f)
-                    gb = -gb;
-                interp_att_[i] = glm::normalize(ga * (1.0f - alpha) + gb * alpha);
-            }
-            else
-            {
-                interp_att_[i] = ga;
-            }
         }
     }
 
@@ -548,55 +500,14 @@ void SatelliteRenderer::drawSatellites()
         gui_.drawSphere(interp_pos_[i], SAT_DOT_R, col);
     }
 
-    // --- Selected satellite: selection halo + lit oriented cube ---
+    // --- Selected satellite: selection halo + lit cube ---
     if (selected_sat_idx_ >= 0 && selected_sat_idx_ < n)
     {
         const int idx = selected_sat_idx_;
-        const glm::quat &q = (idx < (int)interp_att_.size())
-                                 ? interp_att_[idx]
-                                 : glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
-
-        // Lit oriented cube: body axes shading makes orientation readable
         static constexpr glm::vec3 SAT_BOX{0.010f, 0.010f, 0.005f};
         gui_.setLighting(true);
-        gui_.drawBox(interp_pos_[idx], SAT_BOX, q, {0.85f, 0.92f, 1.0f});
+        gui_.drawBox(interp_pos_[idx], SAT_BOX, glm::quat(1.0f, 0.0f, 0.0f, 0.0f), {0.85f, 0.92f, 1.0f});
     }
-
-    gui_.setLighting(true);
-}
-
-void SatelliteRenderer::drawBodyAxes()
-{
-    if (selected_sat_idx_ < 0 ||
-        selected_sat_idx_ >= (int)interp_pos_.size() ||
-        selected_sat_idx_ >= (int)interp_att_.size())
-        return;
-
-    const int idx = selected_sat_idx_;
-    const glm::vec3 &pos = interp_pos_[idx];
-    const glm::quat &q = interp_att_[idx];
-
-    // Arrow length: 2× the cube half-width so axes are clearly visible at close range
-    static constexpr float AXIS_LEN = SAT_DOT_R * 2.0f;
-
-    // Current body axes in ECI (via quaternion rotation)
-    const glm::vec3 bx = q * glm::vec3(1.0f, 0.0f, 0.0f); // body +X
-    const glm::vec3 by = q * glm::vec3(0.0f, 1.0f, 0.0f); // body +Y
-    const glm::vec3 bz = q * glm::vec3(0.0f, 0.0f, 1.0f); // body +Z (nadir face)
-
-    // Nadir target direction in scene space: toward Earth center = -normalize(sat_pos)
-    const glm::vec3 nadir = -glm::normalize(pos);
-
-    gui_.setLighting(false);
-
-    // Body frame (current attitude)
-    gui_.drawArrow(pos, pos + bx * AXIS_LEN, {1.0f, 0.15f, 0.15f}, 2.0f); // X: red
-    gui_.drawArrow(pos, pos + by * AXIS_LEN, {0.15f, 1.0f, 0.15f}, 2.0f); // Y: green
-    gui_.drawArrow(pos, pos + bz * AXIS_LEN, {0.15f, 0.45f, 1.0f}, 2.0f); // Z: blue
-
-    // Target +Z direction (nadir): where body +Z should point in nadir-pointing mode
-    // Drawn slightly longer so it remains visible when body Z is close to aligned
-    gui_.drawArrow(pos, pos + nadir * AXIS_LEN * 1.3f, {1.0f, 0.85f, 0.1f}, 1.5f); // yellow
 
     gui_.setLighting(true);
 }
@@ -927,12 +838,11 @@ void SatelliteRenderer::drawSatellitePanel()
     // ── Tab bar ───────────────────────────────────────────────────────────
     {
         struct TabDef { PanelTab tab; const char* label; };
-        static constexpr int NUM_TABS = 6;
+        static constexpr int NUM_TABS = 5;
         const TabDef tabs[NUM_TABS] = {
-            {PanelTab::ADCS,    "ADCS"},
+            {PanelTab::Data,    "Data"},
             {PanelTab::Power,   "Power"},
             {PanelTab::Thermal, "Thermal"},
-            {PanelTab::Data,    "Data"},
             {PanelTab::Faults,  "Faults"},
             {PanelTab::Viz,     "Viz"},
         };
@@ -978,116 +888,6 @@ void SatelliteRenderer::drawSatellitePanel()
 
     switch (active_tab_)
     {
-    // ══════════════════════════════════════════════════════════════════════
-    case PanelTab::ADCS:
-    {
-        ImGui::TextColored({0.5f, 0.7f, 1.0f, 1.0f}, "ATTITUDE DETERMINATION & CONTROL");
-        ImGui::Spacing();
-
-        // Mode / target summary
-        ImGui::Columns(2, "adcs_mode_cols", false);
-        ImGui::SetColumnWidth(0, col0);
-        ImGui::TextDisabled("Mode");
-        ImGui::NextColumn();
-        ImGui::Text("Nadir Pointing");
-        ImGui::NextColumn();
-        ImGui::TextDisabled("Target");
-        ImGui::NextColumn();
-        ImGui::Text("%+.2f lat  %+.2f lon", lat_deg, lon_deg);
-        ImGui::NextColumn();
-        ImGui::Columns(1);
-
-        ImGui::Spacing();
-
-        // IMU angular rates
-        const bool has_att = (idx < (int)att_buf_.size() && !att_buf_[idx].empty());
-        ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-        if (ImGui::CollapsingHeader("IMU - ANGULAR RATES [rad/s]"))
-        {
-            if (has_att)
-            {
-                const auto &abuf = att_buf_[idx];
-                const int bn = static_cast<int>(abuf.size());
-
-                std::vector<float> wx(bn), wy(bn), wz(bn);
-                for (int i = 0; i < bn; ++i)
-                {
-                    wx[i] = abuf[i].omega_x;
-                    wy[i] = abuf[i].omega_y;
-                    wz[i] = abuf[i].omega_z;
-                }
-                constexpr float PH = 42.0f;
-
-                ImGui::PushStyleColor(ImGuiCol_PlotLines, ImVec4(1.0f, 0.30f, 0.30f, 1.0f));
-                ImGui::PlotLines("##wx", wx.data(), bn, 0, "wx", FLT_MIN, FLT_MAX, {-1.0f, PH});
-                ImGui::PopStyleColor();
-
-                ImGui::PushStyleColor(ImGuiCol_PlotLines, ImVec4(0.30f, 1.0f, 0.30f, 1.0f));
-                ImGui::PlotLines("##wy", wy.data(), bn, 0, "wy", FLT_MIN, FLT_MAX, {-1.0f, PH});
-                ImGui::PopStyleColor();
-
-                ImGui::PushStyleColor(ImGuiCol_PlotLines, ImVec4(0.30f, 0.55f, 1.0f, 1.0f));
-                ImGui::PlotLines("##wz", wz.data(), bn, 0, "wz", FLT_MIN, FLT_MAX, {-1.0f, PH});
-                ImGui::PopStyleColor();
-
-                const AttSample &cur = abuf.back();
-                ImGui::TextColored({1.0f, 0.30f, 0.30f, 1.0f}, "wx");
-                ImGui::SameLine(0, 4);
-                ImGui::Text("% .5f", cur.omega_x);
-                ImGui::SameLine(0, 16);
-                ImGui::TextColored({0.30f, 1.0f, 0.30f, 1.0f}, "wy");
-                ImGui::SameLine(0, 4);
-                ImGui::Text("% .5f", cur.omega_y);
-                ImGui::SameLine(0, 16);
-                ImGui::TextColored({0.30f, 0.55f, 1.0f, 1.0f}, "wz");
-                ImGui::SameLine(0, 4);
-                ImGui::Text("% .5f", cur.omega_z);
-            }
-            else
-            {
-                ImGui::TextDisabled("(FSW disabled - no attitude data)");
-            }
-        }
-
-        // Reaction wheels
-        if (has_att)
-        {
-            ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-            if (ImGui::CollapsingHeader("REACTION WHEELS [N.m.s]"))
-            {
-                const auto &abuf = att_buf_[idx];
-                const int bn = static_cast<int>(abuf.size());
-                std::vector<float> hm(bn);
-                for (int i = 0; i < bn; ++i)
-                    hm[i] = abuf[i].h_mag;
-
-                constexpr float PH = 42.0f;
-                ImGui::PushStyleColor(ImGuiCol_PlotLines, ImVec4(1.0f, 0.75f, 0.2f, 1.0f));
-                ImGui::PlotLines("##hm", hm.data(), bn, 0, "|h_w|", 0.0f, FLT_MAX, {-1.0f, PH});
-                ImGui::PopStyleColor();
-
-                const AttSample &cur = abuf.back();
-                ImGui::TextDisabled("|h_wheels|");
-                ImGui::SameLine(0, 8);
-                ImGui::Text("%.6f N.m.s", cur.h_mag);
-            }
-        }
-
-        // Body axes legend
-        ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-        if (ImGui::CollapsingHeader("3D BODY AXES"))
-        {
-            ImGui::TextColored({1.00f, 0.25f, 0.25f, 1.0f}, "[+X]");
-            ImGui::SameLine(0, 10);
-            ImGui::TextColored({0.25f, 1.00f, 0.25f, 1.0f}, "[+Y]");
-            ImGui::SameLine(0, 10);
-            ImGui::TextColored({0.25f, 0.50f, 1.00f, 1.0f}, "[+Z]");
-            ImGui::SameLine(0, 10);
-            ImGui::TextColored({1.00f, 0.85f, 0.10f, 1.0f}, "[+Z target / nadir]");
-        }
-        break;
-    }
-
     // ══════════════════════════════════════════════════════════════════════
     case PanelTab::Power:
     {
@@ -1464,7 +1264,6 @@ void SatelliteRenderer::run()
             drawMoonIndicator();
             drawTrails();
             drawSatellites();
-            drawBodyAxes();
             drawGroundLinks();
         }
 

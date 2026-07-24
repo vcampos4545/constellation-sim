@@ -4,8 +4,6 @@
 #include "orbit/Propagator.h"
 #include "constellation/Constellation.h"
 #include "metrics/MetricsCollector.h"
-#include "gnc/AttitudeState.h"
-#include "gnc/Guidance.h"
 #include <functional>
 #include <optional>
 
@@ -29,8 +27,6 @@ public:
         std::vector<bool>          in_eclipse;
         Vec3                       sun_dir_eci;
         Vec3                       moon_dir_eci;
-        std::vector<AttitudeState> attitude_states; // body-to-ECI attitude per satellite
-        std::vector<ADCSMode>      adcs_modes;      // current FSW mode per satellite
     };
 
     // Static per-satellite metadata (same every frame; populated in constructor).
