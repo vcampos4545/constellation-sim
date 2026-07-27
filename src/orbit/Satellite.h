@@ -8,6 +8,7 @@ struct SatelliteMetrics {
     double time_in_eclipse_s     = 0.0;
     double accumulated_drag_dv_ms = 0.0;
     double accumulated_sk_dv_ms  = 0.0;
+    int    sk_maneuver_count     = 0;
     double total_time_s          = 0.0;
 
     double sunlit_fraction()  const { return (total_time_s > 0) ? time_in_sunlight_s / total_time_s : 0.0; }

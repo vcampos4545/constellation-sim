@@ -1,5 +1,6 @@
 #include "metrics/MetricsCollector.h"
 #include "environment/AtmosphereModel.h"
+#include "environment/LinkBudget.h"
 #include "core/math/Constants.h"
 #include <cmath>
 #include <algorithm>
@@ -98,6 +99,11 @@ void MetricsCollector::updateSatMetrics(const std::vector<Satellite*>& sats, dou
         acc.alt_sum_km += alt_km;
         ++acc.alt_samples;
         acc.min_alt_km = std::min(acc.min_alt_km, alt_km);
+
+        // Station-keeping ΔV is accumulated directly on the satellite by
+        // SimulationEngine::applyStationKeeping(); mirror the latest value.
+        acc.sk_dv_latest       = sat->metrics().accumulated_sk_dv_ms;
+        acc.sk_maneuvers_latest = sat->metrics().sk_maneuver_count;
     }
 }
 
@@ -145,6 +151,7 @@ void MetricsCollector::updateCoverage(const std::vector<Satellite*>& sats, doubl
         const Vec3 gt_hat = gt_eci.normalized();
 
         double best_elev_deg   = -90.0;
+        double best_range_m    = 0.0;
         bool   any_visible     = false;
         bool   any_illuminated = false;
 
@@ -158,7 +165,10 @@ void MetricsCollector::updateCoverage(const std::vector<Satellite*>& sats, doubl
 
             if (visible) {
                 any_visible = true;
-                if (elev_deg > best_elev_deg) best_elev_deg = elev_deg;
+                if (elev_deg > best_elev_deg) {
+                    best_elev_deg = elev_deg;
+                    best_range_m  = slant.norm();
+                }
                 if (!EclipseModel::inEclipse(sat->state().position, sun_dir))
                     any_illuminated = true;
             }
@@ -193,6 +203,14 @@ void MetricsCollector::updateCoverage(const std::vector<Satellite*>& sats, doubl
             ++a.visible_samples;
             if (any_illuminated) a.illuminated_s += dt_s;
             if (!a.in_pass) { a.in_pass = true; a.pass_start_s = time_s; ++a.pass_count; }
+
+            if (cfg_.link_budget.enabled) {
+                const double rate_mbps = LinkBudget::dataRateMbps(best_range_m, cfg_.link_budget);
+                a.datarate_sum_mbps += rate_mbps;
+                a.min_datarate_mbps  = std::min(a.min_datarate_mbps, rate_mbps);
+                a.peak_datarate_mbps = std::max(a.peak_datarate_mbps, rate_mbps);
+                ++a.datarate_samples;
+            }
         } else if (a.in_pass) {
             a.pass_dur_sum_s += time_s - a.pass_start_s;
             a.in_pass = false;
@@ -206,6 +224,7 @@ ConstellationResult MetricsCollector::finalize(int run_id, const SimConfig& cfg)
     double fleet_sunlit  = 0.0;
     double fleet_drag_dv = 0.0;
     double fleet_sk_dv   = 0.0;
+    double fleet_annual_sk_dv = 0.0;
     double fleet_alt     = 0.0;
     double fleet_min_alt = 1e9;
 
@@ -220,9 +239,22 @@ ConstellationResult MetricsCollector::finalize(int run_id, const SimConfig& cfg)
         r.time_in_eclipse_pct  = (total_s > 0) ? 100.0*a.eclipse_s/total_s : 0.0;
         r.avg_drag_accel_ms2   = (a.drag_samples > 0) ? a.drag_accel_sum/a.drag_samples : 0.0;
         r.total_drag_dv_ms     = a.drag_dv_ms;
-        r.stationkeeping_dv_ms = a.drag_dv_ms;  // SK ΔV ≈ drag ΔV for circular orbits
+        if (cfg.station_keeping.enabled) {
+            // Real ΔV spent by active reboost maneuvers (see StationKeeping::maybeReboost).
+            r.stationkeeping_dv_ms = a.sk_dv_latest;
+            r.sk_maneuver_count    = a.sk_maneuvers_latest;
+        } else {
+            // No active station-keeping simulated: fall back to the passive
+            // drag-ΔV estimate as a rough proxy for what maintaining
+            // altitude would eventually cost.
+            r.stationkeeping_dv_ms = a.drag_dv_ms;
+        }
         r.avg_altitude_km      = (a.alt_samples > 0) ? a.alt_sum_km/a.alt_samples : 0.0;
         r.min_altitude_km      = a.min_alt_km;
+
+        if (cfg.duration_days > 0.0) {
+            r.annual_sk_dv_ms_per_year = r.stationkeeping_dv_ms * (365.25 / cfg.duration_days);
+        }
 
         // Orbital lifetime estimate via altitude decay rate.
         // For a circular orbit, drag ΔV lowers altitude at ~2a·Δv/v per impulse.
@@ -244,6 +276,7 @@ ConstellationResult MetricsCollector::finalize(int run_id, const SimConfig& cfg)
         fleet_sunlit  += r.time_in_sunlight_pct;
         fleet_drag_dv += r.total_drag_dv_ms;
         fleet_sk_dv   += r.stationkeeping_dv_ms;
+        fleet_annual_sk_dv += r.annual_sk_dv_ms_per_year;
         fleet_alt     += r.avg_altitude_km;
         fleet_min_alt  = std::min(fleet_min_alt, r.min_altitude_km);
     }
@@ -262,6 +295,7 @@ ConstellationResult MetricsCollector::finalize(int run_id, const SimConfig& cfg)
         cr.avg_sunlit_pct = fleet_sunlit  / num_satellites_;
         cr.avg_drag_dv_ms = fleet_drag_dv / num_satellites_;
         cr.avg_sk_dv_ms   = fleet_sk_dv   / num_satellites_;
+        cr.avg_annual_sk_dv_ms_per_year = fleet_annual_sk_dv / num_satellites_;
         cr.avg_altitude_km = fleet_alt    / num_satellites_;
         cr.min_altitude_km = fleet_min_alt;
     }
@@ -322,6 +356,21 @@ ConstellationResult MetricsCollector::finalize(int run_id, const SimConfig& cfg)
         r.pass_count        = a.pass_count;
         r.avg_pass_duration_s = (a.pass_count > 0)
                                 ? a.pass_dur_sum_s / a.pass_count : 0.0;
+
+        if (cfg_.link_budget.enabled && a.datarate_samples > 0) {
+            r.avg_datarate_mbps  = a.datarate_sum_mbps / a.datarate_samples;
+            r.min_datarate_mbps  = a.min_datarate_mbps;
+            r.peak_datarate_mbps = a.peak_datarate_mbps;
+        }
+    }
+
+    if (cfg_.link_budget.enabled && !gt_results_.empty()) {
+        double sum = 0.0;
+        int    n   = 0;
+        for (const auto& r : gt_results_) {
+            if (r.avg_datarate_mbps > 0.0) { sum += r.avg_datarate_mbps; ++n; }
+        }
+        cr.avg_datarate_mbps = (n > 0) ? sum / n : 0.0;
     }
 
     return cr;

@@ -33,6 +33,17 @@ FetchContent_MakeAvailable(json)
 
 find_package(Threads REQUIRED)
 
+option(BUILD_TESTS "Build the unit test suite" ON)
+
+if(BUILD_TESTS)
+  FetchContent_Declare(
+    catch2
+    GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+    GIT_TAG v3.7.1
+  )
+  FetchContent_MakeAvailable(catch2)
+endif()
+
 # --------------------------------------------------------------------------
 # Source groups
 # --------------------------------------------------------------------------
@@ -45,6 +56,9 @@ set(ORBIT_SOURCES
   src/orbit/OrbitalElements.cpp
   src/orbit/Satellite.cpp
   src/orbit/Propagator.cpp
+  src/orbit/TLE.cpp
+  src/orbit/SGP4.cpp
+  src/orbit/StationKeeping.cpp
 )
 
 set(ENVIRONMENT_SOURCES
@@ -71,17 +85,20 @@ set(CONSTELLATION_SOURCES
 
 set(METRICS_SOURCES
   src/metrics/MetricsCollector.cpp
+  src/metrics/ConjunctionScreener.cpp
 )
 
 set(MONTECARLO_SOURCES
   src/montecarlo/ParameterSweep.cpp
   src/montecarlo/SimulationBatch.cpp
   src/montecarlo/ExperimentManager.cpp
+  src/montecarlo/ParetoFrontier.cpp
 )
 
 set(OUTPUT_SOURCES
   src/output/CsvWriter.cpp
   src/output/OutputManager.cpp
+  src/output/OemWriter.cpp
 )
 
 # --------------------------------------------------------------------------
@@ -109,6 +126,12 @@ target_link_libraries(constellation_core PUBLIC
 # --------------------------------------------------------------------------
 add_executable(ConstellationSim src/main.cpp)
 target_link_libraries(ConstellationSim PRIVATE constellation_core)
+
+# --------------------------------------------------------------------------
+# Validation tools
+# --------------------------------------------------------------------------
+add_executable(sgp4_validation tools/sgp4_validation.cpp)
+target_link_libraries(sgp4_validation PRIVATE constellation_core)
 
 # --------------------------------------------------------------------------
 # Optional visualization (requires VGL)
@@ -158,6 +181,22 @@ if(BUILD_VIZ)
   )
   target_link_libraries(constellation_core PUBLIC vgl imgui_lib)
   target_compile_definitions(constellation_core PUBLIC CONSTELLATION_VIZ_ENABLED)
+endif()
+
+# --------------------------------------------------------------------------
+# Unit tests
+# --------------------------------------------------------------------------
+if(BUILD_TESTS)
+  enable_testing()
+  file(GLOB TEST_SOURCES CONFIGURE_DEPENDS tests/*.cpp)
+  add_executable(ConstellationSimTests ${TEST_SOURCES})
+  target_link_libraries(ConstellationSimTests PRIVATE
+    constellation_core
+    Catch2::Catch2WithMain
+  )
+  include(CTest)
+  include(${catch2_SOURCE_DIR}/extras/Catch.cmake)
+  catch_discover_tests(ConstellationSimTests)
 endif()
 
 # --------------------------------------------------------------------------

@@ -1,7 +1,9 @@
 #include "output/OutputManager.h"
+#include "output/OemWriter.h"
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
+#include <map>
 
 namespace fs = std::filesystem;
 
@@ -36,10 +38,12 @@ void OutputManager::writeSummaryRow(CsvWriter& w, const ConstellationResult& cr)
                 cr.revisit_time_max_s,
                 cr.avg_drag_dv_ms,
                 cr.avg_sk_dv_ms,
+                cr.avg_annual_sk_dv_ms_per_year,
                 cr.avg_sunlit_pct,
                 cr.avg_altitude_km,
                 cr.min_altitude_km,
-                cr.deployment_dv_per_sat_ms);
+                cr.deployment_dv_per_sat_ms,
+                cr.avg_datarate_mbps);
 }
 
 void OutputManager::writeRun(int run_id,
@@ -56,9 +60,9 @@ void OutputManager::writeRun(int run_id,
             "total_satellites","planes","sats_per_plane",
             "coverage_pct",
             "revisit_time_avg_s","revisit_time_max_s",
-            "avg_drag_dv_ms","avg_sk_dv_ms",
+            "avg_drag_dv_ms","avg_sk_dv_ms","avg_annual_sk_dv_ms_per_year",
             "avg_sunlit_pct","avg_altitude_km","min_altitude_km",
-            "deployment_dv_per_sat_ms"
+            "deployment_dv_per_sat_ms","avg_datarate_mbps"
         });
         summary_header_written_ = true;
     }
@@ -78,9 +82,9 @@ void OutputManager::writeRun(int run_id,
             "altitude_km","inclination_deg",
             "total_satellites","planes","sats_per_plane",
             "coverage_pct","revisit_time_avg_s","revisit_time_max_s",
-            "avg_drag_dv_ms","avg_sk_dv_ms",
+            "avg_drag_dv_ms","avg_sk_dv_ms","avg_annual_sk_dv_ms_per_year",
             "avg_sunlit_pct","avg_altitude_km","min_altitude_km",
-            "deployment_dv_per_sat_ms"
+            "deployment_dv_per_sat_ms","avg_datarate_mbps"
         });
         writeSummaryRow(w, cr);
     }
@@ -100,14 +104,16 @@ void OutputManager::writeSatelliteCsv(const std::string& path,
         "run_id","satellite_id","plane_id","seat_id",
         "time_in_sunlight_pct","time_in_eclipse_pct",
         "avg_drag_accel_ms2","total_drag_dv_ms",
-        "stationkeeping_dv_ms","avg_altitude_km","min_altitude_km",
+        "stationkeeping_dv_ms","annual_sk_dv_ms_per_year","sk_maneuver_count",
+        "avg_altitude_km","min_altitude_km",
         "orbital_lifetime_days"
     });
     for (const auto& s : sats) {
         w.writeRowV(s.run_id, s.sat_id, s.plane_id, s.seat_id,
                     s.time_in_sunlight_pct, s.time_in_eclipse_pct,
                     s.avg_drag_accel_ms2, s.total_drag_dv_ms,
-                    s.stationkeeping_dv_ms, s.avg_altitude_km,
+                    s.stationkeeping_dv_ms, s.annual_sk_dv_ms_per_year, s.sk_maneuver_count,
+                    s.avg_altitude_km,
                     s.min_altitude_km, s.orbital_lifetime_days);
     }
 }
@@ -120,14 +126,16 @@ void OutputManager::writeGroundTargetCsv(const std::string& path,
         "visible_pct","illuminated_pct",
         "avg_elevation_deg","max_elevation_deg",
         "avg_pass_duration_s","pass_count",
-        "coverage_time_s","illuminated_time_s"
+        "coverage_time_s","illuminated_time_s",
+        "avg_datarate_mbps","min_datarate_mbps","peak_datarate_mbps"
     });
     for (const auto& g : gts) {
         w.writeRowV(g.name, g.lat_deg, g.lon_deg,
                     g.visible_pct, g.illuminated_pct,
                     g.avg_elevation_deg, g.max_elevation_deg,
                     g.avg_pass_duration_s, g.pass_count,
-                    g.coverage_time_s, g.illuminated_time_s);
+                    g.coverage_time_s, g.illuminated_time_s,
+                    g.avg_datarate_mbps, g.min_datarate_mbps, g.peak_datarate_mbps);
     }
 }
 
@@ -172,6 +180,67 @@ void OutputManager::writeTrajectory(
                     s.inclination_deg, s.raan_deg, s.aop_deg,
                     s.true_anomaly_deg, s.altitude_km);
     }
+}
+
+void OutputManager::writeOem(int run_id,
+                             const std::vector<SimulationEngine::EphemerisSample>& samples,
+                             double epoch_jd,
+                             const std::string& object_name_prefix) {
+    if (samples.empty()) return;
+
+    std::map<int, std::vector<OemWriter::EphemerisPoint>> by_sat;
+    for (const auto& s : samples) {
+        by_sat[s.sat_id].push_back({s.time_s, s.position, s.velocity});
+    }
+
+    const std::string oem_dir = runDir(run_id) + "/oem";
+    ensureDir(oem_dir);
+
+    for (const auto& [sat_id, points] : by_sat) {
+        OemWriter::Metadata meta;
+        meta.object_name = object_name_prefix + "-" + std::to_string(sat_id);
+        meta.object_id   = std::to_string(sat_id);
+        meta.epoch_jd    = epoch_jd;
+
+        char fname[64];
+        std::snprintf(fname, sizeof(fname), "/sat_%04d.oem", sat_id);
+        OemWriter::write(oem_dir + fname, meta, points);
+    }
+}
+
+void OutputManager::writeConjunctions(int run_id,
+                                      const std::vector<ConjunctionScreener::Event>& events) {
+    if (events.empty()) return;
+    const std::string path = runDir(run_id) + "/conjunctions.csv";
+    CsvWriter w(path);
+    w.writeHeader({"sat_i", "sat_j", "time_of_min_dist_s", "min_distance_km"});
+    for (const auto& e : events) {
+        w.writeRowV(e.sat_i, e.sat_j, e.time_of_min_dist_s, e.min_distance_km);
+    }
+}
+
+void OutputManager::writeParetoFrontier(const std::vector<ConstellationResult>& frontier,
+                                        const std::vector<std::string>& objectives) {
+    const std::string path = exp_dir_ + "/pareto_frontier.csv";
+    CsvWriter w(path);
+
+    std::ostringstream obj_note;
+    for (size_t i = 0; i < objectives.size(); ++i) {
+        if (i > 0) obj_note << "; ";
+        obj_note << objectives[i];
+    }
+    w.writeRow({"# objectives: " + obj_note.str()});
+
+    w.writeHeader({
+        "run_id","run_name",
+        "altitude_km","inclination_deg",
+        "total_satellites","planes","sats_per_plane",
+        "coverage_pct","revisit_time_avg_s","revisit_time_max_s",
+        "avg_drag_dv_ms","avg_sk_dv_ms","avg_annual_sk_dv_ms_per_year",
+        "avg_sunlit_pct","avg_altitude_km","min_altitude_km",
+        "deployment_dv_per_sat_ms","avg_datarate_mbps"
+    });
+    for (const auto& cr : frontier) writeSummaryRow(w, cr);
 }
 
 void OutputManager::finalize() {

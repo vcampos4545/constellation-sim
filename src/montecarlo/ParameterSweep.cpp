@@ -4,7 +4,10 @@
 #include <numeric>
 
 ParameterSweep::ParameterSweep(const MCConfig& mc_cfg) : mc_cfg_(mc_cfg) {
-    if (mc_cfg_.sampling == "grid") {
+    // "pareto" mode enumerates the full parameter grid too -- Pareto-optimal
+    // extraction is a post-processing step over that same candidate set,
+    // not a different config-generation strategy.
+    if (mc_cfg_.sampling == "grid" || mc_cfg_.sampling == "pareto") {
         // Total runs = product of all parameter list lengths
         total_runs_ = 1;
         for (const auto& p : mc_cfg_.parameters) {
@@ -16,7 +19,7 @@ ParameterSweep::ParameterSweep(const MCConfig& mc_cfg) : mc_cfg_(mc_cfg) {
 }
 
 std::vector<SimConfig> ParameterSweep::generateConfigs() const {
-    if (mc_cfg_.sampling == "grid") return gridSweep();
+    if (mc_cfg_.sampling == "grid" || mc_cfg_.sampling == "pareto") return gridSweep();
     return randomSweep();
 }
 

@@ -144,6 +144,8 @@ int main(int argc, char* argv[]) {
             output.writeRun(0, cr, engine.satelliteResults(), engine.groundTargetResults());
             if (!engine.trajectorySnapshots().empty())
                 output.writeTrajectory(0, engine.trajectorySnapshots());
+            if (!engine.ephemerisSamples().empty())
+                output.writeOem(0, engine.ephemerisSamples(), cfg.epoch_jd);
             output.finalize();
 
             std::cout << "Output: " << cfg.output_directory << "/" << cfg.run_name << "\n";
@@ -161,6 +163,10 @@ int main(int argc, char* argv[]) {
             output.writeTrajectory(0, engine.trajectorySnapshots());
         if (!engine.passEvents().empty())
             output.writePassEvents(0, engine.passEvents());
+        if (!engine.ephemerisSamples().empty())
+            output.writeOem(0, engine.ephemerisSamples(), cfg.epoch_jd);
+        if (cfg.metrics.conjunction.enabled)
+            output.writeConjunctions(0, engine.conjunctionEvents());
         output.finalize();
 
         std::cout << "\nResults:\n"

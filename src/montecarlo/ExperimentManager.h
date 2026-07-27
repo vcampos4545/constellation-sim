@@ -8,6 +8,7 @@
 #include <atomic>
 #include <optional>
 #include <functional>
+#include <mutex>
 
 // Orchestrates a Monte Carlo experiment:
 //   1. Generates all SimConfigs via ParameterSweep
@@ -35,5 +36,11 @@ private:
     int            total_runs_{0};
     std::optional<ProgressCallback> progress_cb_;
 
+    // Populated only when mc_cfg_.sampling == "pareto", for post-run
+    // Pareto-frontier extraction.
+    std::mutex results_mutex_;
+    std::vector<ConstellationResult> collected_results_;
+
     void runOne(int run_id, const SimConfig& cfg);
+    void writeParetoFrontier();
 };

@@ -99,6 +99,14 @@ PhysicalProperties ConfigLoader::parseSatellite(const json& j) {
     return p;
 }
 
+StationKeepingConfig ConfigLoader::parseStationKeeping(const json& j) {
+    StationKeepingConfig cfg;
+    cfg.enabled              = getOrDefaultB(j, "enabled",              cfg.enabled);
+    cfg.altitude_deadband_km = getOrDefault(j,  "altitude_deadband_km", cfg.altitude_deadband_km);
+    cfg.check_interval_s     = getOrDefault(j,  "check_interval_s",     cfg.check_interval_s);
+    return cfg;
+}
+
 PhysicsConfig ConfigLoader::parsePhysics(const json& j) {
     PhysicsConfig p;
     p.gravity      = getOrDefaultB(j, "gravity",      p.gravity);
@@ -130,6 +138,22 @@ MetricsConfig ConfigLoader::parseMetrics(const json& j) {
     m.delta_v  = getOrDefaultB(j, "delta_v",  m.delta_v);
     m.revisit  = getOrDefaultB(j, "revisit",  m.revisit);
     m.links    = getOrDefaultB(j, "links",    m.links);
+
+    if (j.contains("conjunction")) {
+        const auto& cj = j.at("conjunction");
+        m.conjunction.enabled           = getOrDefaultB(cj, "enabled",           m.conjunction.enabled);
+        m.conjunction.threshold_km      = getOrDefault(cj,  "threshold_km",      m.conjunction.threshold_km);
+        m.conjunction.sample_interval_s = getOrDefault(cj,  "sample_interval_s", m.conjunction.sample_interval_s);
+    }
+    if (j.contains("link_budget")) {
+        const auto& lj = j.at("link_budget");
+        m.link_budget.enabled          = getOrDefaultB(lj, "enabled",          m.link_budget.enabled);
+        m.link_budget.frequency_ghz    = getOrDefault(lj,  "frequency_ghz",    m.link_budget.frequency_ghz);
+        m.link_budget.eirp_dbw         = getOrDefault(lj,  "eirp_dbw",         m.link_budget.eirp_dbw);
+        m.link_budget.gt_dbk           = getOrDefault(lj,  "gt_dbk",           m.link_budget.gt_dbk);
+        m.link_budget.bandwidth_mhz    = getOrDefault(lj,  "bandwidth_mhz",    m.link_budget.bandwidth_mhz);
+        m.link_budget.other_losses_db  = getOrDefault(lj,  "other_losses_db",  m.link_budget.other_losses_db);
+    }
     return m;
 }
 
@@ -187,6 +211,7 @@ SimConfig ConfigLoader::parseSimConfig(const json& j) {
     if (j.contains("satellite"))       cfg.satellite     = parseSatellite(j.at("satellite"));
     if (j.contains("forces"))         cfg.physics       = parsePhysics(j.at("forces"));
     if (j.contains("metrics"))        cfg.metrics       = parseMetrics(j.at("metrics"));
+    if (j.contains("station_keeping")) cfg.station_keeping = parseStationKeeping(j.at("station_keeping"));
 
     if (j.contains("ground_targets")) {
         for (const auto& t : j.at("ground_targets")) {
@@ -204,6 +229,12 @@ SimConfig ConfigLoader::parseSimConfig(const json& j) {
         cfg.output_directory              = getOrDefaultS(o, "directory",  cfg.output_directory);
         cfg.run_name                      = getOrDefaultS(o, "run_name",   cfg.run_name);
         cfg.trajectory_sample_interval_s  = getOrDefault(o,  "trajectory_sample_interval_s", 0.0);
+        cfg.export_oem                    = getOrDefaultB(o, "export_oem", cfg.export_oem);
+        if (o.contains("oem_satellite_ids")) {
+            cfg.oem_satellite_ids.clear();
+            for (const auto& id : o.at("oem_satellite_ids"))
+                cfg.oem_satellite_ids.push_back(id.get<int>());
+        }
     }
     return cfg;
 }
@@ -244,6 +275,11 @@ MCConfig ConfigLoader::loadMCConfig(const std::string& path) {
             }
             mc.parameters.push_back(std::move(range));
         }
+    }
+
+    if (j.contains("pareto_objectives")) {
+        for (const auto& v : j.at("pareto_objectives"))
+            mc.pareto_objectives.push_back(v.get<std::string>());
     }
 
     if (j.contains("output")) {

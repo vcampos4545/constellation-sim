@@ -4,7 +4,9 @@
 #include "orbit/Propagator.h"
 #include "constellation/Constellation.h"
 #include "metrics/MetricsCollector.h"
+#include "metrics/ConjunctionScreener.h"
 #include <functional>
+#include <memory>
 #include <optional>
 
 // Single-simulation execution engine.
@@ -49,6 +51,16 @@ public:
         double altitude_km{0};
     };
 
+    // Raw position/velocity sample, captured for CCSDS OEM ephemeris export.
+    // sat_id here is the satellite's index in constellation order (matching
+    // OrbitalSnapshot's convention), not necessarily Satellite::id().
+    struct EphemerisSample {
+        double time_s{0};
+        int    sat_id{0};
+        Vec3   position;
+        Vec3   velocity;
+    };
+
     using FrameCallback = std::function<void(const FrameData&)>;
 
     explicit SimulationEngine(const SimConfig& cfg);
@@ -70,6 +82,10 @@ public:
     const std::vector<SatelliteInfo>&      satelliteInfo()       const;
     const std::vector<OrbitalSnapshot>&    trajectorySnapshots() const { return traj_snapshots_; }
     const std::vector<PassEvent>&          passEvents()          const { return metrics_.passEvents(); }
+    const std::vector<EphemerisSample>&    ephemerisSamples()    const { return ephem_samples_; }
+
+    // Empty if metrics.conjunction.enabled was false.
+    std::vector<ConjunctionScreener::Event> conjunctionEvents() const;
 
 private:
     SimConfig        cfg_;
@@ -81,8 +97,17 @@ private:
     std::vector<SatelliteInfo>   sat_info_;        // populated in constructor
     std::vector<OrbitalSnapshot> traj_snapshots_;  // populated during run() if enabled
     double                       traj_next_sample_s_{0.0};
+    std::vector<EphemerisSample> ephem_samples_;   // populated during run() if export_oem enabled
+
+    std::unique_ptr<ConjunctionScreener> conjunction_screener_;
+    double conjunction_next_sample_s_{0.0};
+
+    std::vector<double> nominal_sma_m_;      // per-satellite station-keeping target, from initial state
+    double sk_next_check_s_{0.0};
 
     void buildPropagator();
     void broadcastFrame(double time_s);
     void sampleTrajectory(double time_s);
+    void sampleEphemeris(double time_s);
+    void applyStationKeeping(double time_s);
 };

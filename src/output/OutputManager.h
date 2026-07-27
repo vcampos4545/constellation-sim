@@ -1,6 +1,7 @@
 #pragma once
 
 #include "metrics/MetricsCollector.h"
+#include "metrics/ConjunctionScreener.h"
 #include "core/SimulationEngine.h"
 #include "output/CsvWriter.h"
 #include <string>
@@ -35,6 +36,22 @@ public:
     // Write per-pass AOS/LOS table to CSV. Only written when ground targets are configured.
     void writePassEvents(int run_id,
                          const std::vector<PassEvent>& events);
+
+    // Write one CCSDS OEM ephemeris file per satellite present in `samples`,
+    // into <run_dir>/oem/sat_<id>.oem.
+    void writeOem(int run_id,
+                 const std::vector<SimulationEngine::EphemerisSample>& samples,
+                 double epoch_jd,
+                 const std::string& object_name_prefix = "SAT");
+
+    // Write pairwise conjunction events (sorted closest-first) to CSV.
+    void writeConjunctions(int run_id,
+                           const std::vector<ConjunctionScreener::Event>& events);
+
+    // Write the non-dominated subset of a Monte Carlo sweep to
+    // <experiment_dir>/pareto_frontier.csv (same columns as experiment_summary.csv).
+    void writeParetoFrontier(const std::vector<ConstellationResult>& frontier,
+                             const std::vector<std::string>& objectives);
 
     // Finalize: flush the experiment summary CSV.
     void finalize();

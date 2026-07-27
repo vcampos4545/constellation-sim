@@ -9,11 +9,13 @@
 #include "environment/EclipseModel.h"
 #include "environment/SunModel.h"
 #include "orbit/OrbitalElements.h"
+#include "orbit/StationKeeping.h"
 #include "core/math/Constants.h"
 #include <iostream>
 #include <iomanip>
 #include <cmath>
 #include <mutex>
+#include <algorithm>
 
 // Serialize all simulation progress output so multi-threaded MC runs
 // don't interleave partial lines on the terminal.
@@ -32,6 +34,33 @@ SimulationEngine::SimulationEngine(const SimConfig& cfg)
     for (auto* sat : constellation_.satellites()) {
         const_cast<PhysicalProperties&>(sat->properties()) = cfg.satellite;
         sat_info_.push_back({sat->id(), sat->planeId(), sat->seatId()});
+    }
+
+    if (cfg_.metrics.conjunction.enabled) {
+        conjunction_screener_ = std::make_unique<ConjunctionScreener>(
+            cfg_.metrics.conjunction, constellation_.satellites());
+    }
+
+    if (cfg_.station_keeping.enabled) {
+        nominal_sma_m_.reserve(constellation_.satellites().size());
+        for (const auto* sat : constellation_.satellites()) {
+            const OrbitalElements e = OrbitalElements::fromStateVector(sat->state(), Constants::GM_EARTH);
+            nominal_sma_m_.push_back(e.sma);
+        }
+    }
+}
+
+void SimulationEngine::applyStationKeeping(double /*time_s*/) {
+    const auto& sats = constellation_.satellites();
+    const double mu = Constants::GM_EARTH;
+    const double deadband_m = cfg_.station_keeping.altitude_deadband_km * 1000.0;
+
+    for (int i = 0; i < static_cast<int>(sats.size()); ++i) {
+        const double dv = StationKeeping::maybeReboost(sats[i]->state(), nominal_sma_m_[i], deadband_m, mu);
+        if (dv > 0.0) {
+            sats[i]->metrics().accumulated_sk_dv_ms += dv;
+            ++sats[i]->metrics().sk_maneuver_count;
+        }
     }
 }
 
@@ -118,6 +147,23 @@ void SimulationEngine::sampleTrajectory(double time_s) {
     }
 }
 
+void SimulationEngine::sampleEphemeris(double time_s) {
+    const auto& sats = constellation_.satellites();
+    const bool filter = !cfg_.oem_satellite_ids.empty();
+    for (int i = 0; i < static_cast<int>(sats.size()); ++i) {
+        if (filter &&
+            std::find(cfg_.oem_satellite_ids.begin(), cfg_.oem_satellite_ids.end(), i)
+                == cfg_.oem_satellite_ids.end())
+            continue;
+        EphemerisSample s;
+        s.time_s   = time_s;
+        s.sat_id   = i;
+        s.position = sats[i]->state().position;
+        s.velocity = sats[i]->state().velocity;
+        ephem_samples_.push_back(s);
+    }
+}
+
 ConstellationResult SimulationEngine::run(int run_id) {
     const double dt     = cfg_.timestep_s;
     const double t_end  = cfg_.duration_s();
@@ -135,6 +181,7 @@ ConstellationResult SimulationEngine::run(int run_id) {
     }
 
     const bool do_traj = (cfg_.trajectory_sample_interval_s > 0.0);
+    const bool do_oem  = do_traj && cfg_.export_oem;
     if (do_traj) {
         traj_snapshots_.clear();
         traj_snapshots_.reserve(
@@ -142,22 +189,43 @@ ConstellationResult SimulationEngine::run(int run_id) {
             * sats.size());
         traj_next_sample_s_ = 0.0;
         sampleTrajectory(0.0);
+        if (do_oem) { ephem_samples_.clear(); sampleEphemeris(0.0); }
         traj_next_sample_s_ = cfg_.trajectory_sample_interval_s;
     }
 
     metrics_.update(sats, 0.0);
     broadcastFrame(0.0);
 
+    if (conjunction_screener_) {
+        conjunction_screener_->update(sats, 0.0);
+        conjunction_next_sample_s_ = cfg_.metrics.conjunction.sample_interval_s;
+    }
+
+    const bool do_sk = cfg_.station_keeping.enabled;
+    if (do_sk) sk_next_check_s_ = cfg_.station_keeping.check_interval_s;
+
     for (double t = 0.0; t < t_end; t += dt) {
         for (auto* sat : sats) {
             propagator_.step(sat->state(), sat->properties(), dt);
         }
+
+        if (do_sk && (t + dt) >= sk_next_check_s_) {
+            applyStationKeeping(t + dt);
+            sk_next_check_s_ += cfg_.station_keeping.check_interval_s;
+        }
+
         metrics_.update(sats, t + dt);
         broadcastFrame(t + dt);
 
         if (do_traj && (t + dt) >= traj_next_sample_s_) {
             sampleTrajectory(t + dt);
+            if (do_oem) sampleEphemeris(t + dt);
             traj_next_sample_s_ += cfg_.trajectory_sample_interval_s;
+        }
+
+        if (conjunction_screener_ && (t + dt) >= conjunction_next_sample_s_) {
+            conjunction_screener_->update(sats, t + dt);
+            conjunction_next_sample_s_ += cfg_.metrics.conjunction.sample_interval_s;
         }
 
         if (t + dt >= next_report) {
@@ -182,6 +250,11 @@ const std::vector<GroundTargetResult>& SimulationEngine::groundTargetResults() c
 
 const std::vector<SimulationEngine::SatelliteInfo>& SimulationEngine::satelliteInfo() const {
     return sat_info_;
+}
+
+std::vector<ConjunctionScreener::Event> SimulationEngine::conjunctionEvents() const {
+    return conjunction_screener_ ? conjunction_screener_->finalizeEvents()
+                                 : std::vector<ConjunctionScreener::Event>{};
 }
 
 std::pair<ConstellationResult, std::vector<SimulationEngine::FrameData>>

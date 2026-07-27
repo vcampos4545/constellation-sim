@@ -1,4 +1,5 @@
 #include "montecarlo/ExperimentManager.h"
+#include "montecarlo/ParetoFrontier.h"
 #include "core/SimulationEngine.h"
 #include <iostream>
 #include <future>
@@ -19,6 +20,11 @@ void ExperimentManager::runOne(int run_id, const SimConfig& cfg) {
     ConstellationResult cr = engine.run(run_id);
     output_.writeRun(run_id, cr, engine.satelliteResults(), engine.groundTargetResults());
 
+    if (mc_cfg_.sampling == "pareto") {
+        std::lock_guard lock(results_mutex_);
+        collected_results_.push_back(cr);
+    }
+
     const int done = ++completed_;
     if (progress_cb_) (*progress_cb_)(done, total_runs_);
 
@@ -26,6 +32,28 @@ void ExperimentManager::runOne(int run_id, const SimConfig& cfg) {
               << " complete — " << cfg.run_name
               << "  coverage=" << cr.coverage_pct << "%"
               << "  revisit=" << (cr.revisit_time_avg_s/60.0) << " min\n";
+}
+
+void ExperimentManager::writeParetoFrontier() {
+    if (mc_cfg_.pareto_objectives.empty()) {
+        std::cerr << "[MC] sampling=\"pareto\" but no pareto_objectives configured; "
+                  << "skipping frontier extraction (results are still in experiment_summary.csv).\n";
+        return;
+    }
+    try {
+        const auto objectives = ParetoFrontier::parseObjectives(mc_cfg_.pareto_objectives);
+        const auto frontier_idx = ParetoFrontier::nonDominated(collected_results_, objectives);
+
+        std::vector<ConstellationResult> frontier;
+        frontier.reserve(frontier_idx.size());
+        for (int i : frontier_idx) frontier.push_back(collected_results_[i]);
+
+        output_.writeParetoFrontier(frontier, mc_cfg_.pareto_objectives);
+        std::cout << "[MC] Pareto frontier: " << frontier.size() << " / "
+                  << collected_results_.size() << " runs are non-dominated.\n";
+    } catch (const std::exception& e) {
+        std::cerr << "[MC] Pareto frontier extraction failed: " << e.what() << "\n";
+    }
 }
 
 void ExperimentManager::run() {
@@ -59,6 +87,8 @@ void ExperimentManager::run() {
         // Wait for all runs to complete
         for (auto& f : futures) f.get();
     }
+
+    if (mc_cfg_.sampling == "pareto") writeParetoFrontier();
 
     output_.finalize();
     std::cout << "[MC] experiment complete. Results in: "

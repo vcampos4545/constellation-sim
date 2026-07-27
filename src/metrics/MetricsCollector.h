@@ -22,7 +22,9 @@ struct SatelliteResult {
     double time_in_eclipse_pct{0.0};   // [%]
     double avg_drag_accel_ms2{0.0};    // average drag acceleration [m/s^2]
     double total_drag_dv_ms{0.0};      // accumulated drag ΔV [m/s]
-    double stationkeeping_dv_ms{0.0};  // estimated SK ΔV [m/s]
+    double stationkeeping_dv_ms{0.0};  // SK ΔV actually spent (or drag-ΔV estimate if SK disabled) [m/s]
+    double annual_sk_dv_ms_per_year{0.0}; // stationkeeping_dv_ms extrapolated to a 1-year budget
+    int    sk_maneuver_count{0};       // number of reboost burns performed (0 if SK disabled)
     double avg_altitude_km{0.0};       // [km]
     double min_altitude_km{1e9};       // [km]
     double orbital_lifetime_days{0.0}; // rough estimate
@@ -54,9 +56,13 @@ struct ConstellationResult {
     // Inter-satellite
     double avg_nearest_neighbor_km{0.0};
 
+    // Link budget (only populated if metrics.link_budget.enabled)
+    double avg_datarate_mbps{0.0};   // mean achievable rate across ground targets, while visible
+
     // Fleet averages
     double avg_drag_dv_ms{0.0};
     double avg_sk_dv_ms{0.0};
+    double avg_annual_sk_dv_ms_per_year{0.0};
     double avg_sunlit_pct{0.0};
     double avg_altitude_km{0.0};
     double min_altitude_km{0.0};
@@ -85,6 +91,11 @@ struct GroundTargetResult {
     double max_elevation_deg{0.0};   // peak elevation seen [deg]
     double avg_pass_duration_s{0.0}; // mean continuous pass duration [s]
     int    pass_count{0};
+
+    // Link budget (only populated if metrics.link_budget.enabled)
+    double avg_datarate_mbps{0.0};   // mean achievable rate (best visible satellite) while in view
+    double min_datarate_mbps{0.0};   // worst-case rate during any visible sample
+    double peak_datarate_mbps{0.0};  // best-case rate during any visible sample
 };
 
 // ---------------------------------------------------------------------------
@@ -132,6 +143,8 @@ private:
         double alt_sum_km{0.0};
         double min_alt_km{1e9};
         int    alt_samples{0};
+        double sk_dv_latest{0.0};   // mirrors Satellite::metrics().accumulated_sk_dv_ms
+        int    sk_maneuvers_latest{0};
     };
     std::vector<SatAccum> sat_accum_;
     int num_satellites_{0};
@@ -175,6 +188,11 @@ private:
         double pass_start_s{0.0};
         double pass_dur_sum_s{0.0};
         int    pass_count{0};
+
+        double datarate_sum_mbps{0.0};
+        double min_datarate_mbps{1e18};
+        double peak_datarate_mbps{0.0};
+        int    datarate_samples{0};
 
         // Per-satellite pass state (index = sat index in constellation).
         // Populated on first update when num_satellites_ is known.

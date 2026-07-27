@@ -1,5 +1,6 @@
 #pragma once
 
+#include "environment/LinkBudget.h"
 #include <string>
 #include <vector>
 #include <nlohmann/json.hpp>
@@ -52,6 +53,15 @@ struct SatelliteSpec {
     double true_anomaly_deg{0.0};
 };
 
+// Active altitude station-keeping. When enabled, satellites are re-boosted
+// back toward their nominal SMA whenever drag decay exceeds the deadband,
+// and the ΔV actually spent is reported (see src/orbit/StationKeeping.h).
+struct StationKeepingConfig {
+    bool   enabled              = false;
+    double altitude_deadband_km = 5.0;    // max allowed decay before a reboost burn
+    double check_interval_s     = 3600.0; // how often to evaluate/correct
+};
+
 struct CoverageConfig {
     bool   enabled             = true;
     double grid_resolution_deg = 5.0;  // latitude/longitude grid spacing
@@ -59,8 +69,20 @@ struct CoverageConfig {
     double sample_interval_s   = 300.0;
 };
 
+// Pairwise closest-approach screening within the constellation.
+// O(N^2) per sample after a one-time radius-band pre-filter, so
+// sample_interval_s is intentionally decoupled from the physics timestep --
+// keep it coarse for large constellations.
+struct ConjunctionConfig {
+    bool   enabled           = false;
+    double threshold_km      = 5.0;    // only pairs ever closer than this are reported
+    double sample_interval_s = 60.0;   // screening cadence
+};
+
 struct MetricsConfig {
-    CoverageConfig coverage;
+    CoverageConfig     coverage;
+    ConjunctionConfig  conjunction;
+    LinkBudget::Config link_budget;
     bool sunlight  = true;
     bool drag      = true;
     bool delta_v   = true;
@@ -91,6 +113,7 @@ struct SimConfig {
     PhysicalProperties satellite;
     PhysicsConfig      physics;
     MetricsConfig      metrics;
+    StationKeepingConfig station_keeping;
 
     std::vector<GroundTarget> ground_targets;
 
@@ -100,6 +123,13 @@ struct SimConfig {
     // If > 0, orbital elements (RAAN, inclination, etc.) are snapshotted at this
     // interval and written to trajectory.csv. Set to 0 to disable.
     double trajectory_sample_interval_s = 0.0;
+
+    // If true, write a CCSDS OEM ephemeris file per satellite (position/velocity
+    // history), sampled at trajectory_sample_interval_s (which must be > 0).
+    // oem_satellite_ids restricts export to specific satellite indices; empty
+    // means "all satellites" (only recommended for small constellations).
+    bool             export_oem = false;
+    std::vector<int> oem_satellite_ids;
 
     double duration_s() const { return duration_days * 86400.0; }
 };
@@ -116,11 +146,18 @@ struct MCParameterRange {
 struct MCConfig {
     std::string name          = "Unnamed Experiment";
     int         runs          = 0;     // 0 = auto (product of all parameter counts)
-    std::string sampling      = "grid"; // "grid" or "random"
+    std::string sampling      = "grid"; // "grid", "random", or "pareto"
     int         threads       = 0;     // 0 = hardware_concurrency
 
     SimConfig                  base_config;
     std::vector<MCParameterRange> parameters;
+
+    // Used only when sampling == "pareto". Each entry is "maximize:<field>"
+    // or "minimize:<field>", where <field> names a ConstellationResult
+    // member (e.g. "coverage_pct", "total_satellites", "avg_annual_sk_dv_ms_per_year").
+    // The full parameter grid is still run; the Pareto-optimal subset (by
+    // these objectives) is written to pareto_frontier.csv.
+    std::vector<std::string> pareto_objectives;
 
     std::string output_directory  = "output";
     std::string experiment_name   = "experiment";
@@ -152,4 +189,5 @@ private:
     static PhysicalProperties parseSatellite(const nlohmann::json& j);
     static PhysicsConfig      parsePhysics(const nlohmann::json& j);
     static MetricsConfig      parseMetrics(const nlohmann::json& j);
+    static StationKeepingConfig parseStationKeeping(const nlohmann::json& j);
 };
