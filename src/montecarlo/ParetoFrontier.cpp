@@ -28,6 +28,8 @@ const std::unordered_map<std::string, Accessor>& fieldRegistry() {
         {"avg_altitude_km",             [](const ConstellationResult& c) { return c.avg_altitude_km; }},
         {"min_altitude_km",             [](const ConstellationResult& c) { return c.min_altitude_km; }},
         {"deployment_dv_per_sat_ms",    [](const ConstellationResult& c) { return c.deployment_dv_per_sat_ms; }},
+        {"avg_datarate_mbps",           [](const ConstellationResult& c) { return c.avg_datarate_mbps; }},
+        {"avg_solar_power_w",           [](const ConstellationResult& c) { return c.avg_solar_power_w; }},
     };
     return registry;
 }

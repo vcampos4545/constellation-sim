@@ -1,4 +1,5 @@
 #include "core/ConfigLoader.h"
+#include "core/CityData.h"
 #include <fstream>
 #include <stdexcept>
 #include <chrono>
@@ -96,6 +97,8 @@ PhysicalProperties ConfigLoader::parseSatellite(const json& j) {
     p.drag_area_m2     = getOrDefault(j, "drag_area_m2",     p.drag_area_m2);
     p.reflectivity     = getOrDefault(j, "reflectivity",     p.reflectivity);
     p.srp_area_m2      = getOrDefault(j, "srp_area_m2",      p.srp_area_m2);
+    p.solar_array_area_m2    = getOrDefault(j, "solar_array_area_m2",    p.solar_array_area_m2);
+    p.solar_array_efficiency = getOrDefault(j, "solar_array_efficiency", p.solar_array_efficiency);
     return p;
 }
 
@@ -216,9 +219,21 @@ SimConfig ConfigLoader::parseSimConfig(const json& j) {
     if (j.contains("ground_targets")) {
         for (const auto& t : j.at("ground_targets")) {
             GroundTarget gt;
-            gt.name        = getOrDefaultS(t, "name",        "");
-            gt.lat_deg     = getOrDefault(t,  "lat_deg",     0.0);
-            gt.lon_deg     = getOrDefault(t,  "lon_deg",     0.0);
+            if (t.contains("city")) {
+                const std::string city_name = t.at("city").get<std::string>();
+                const CityData::City* city = CityData::find(city_name);
+                if (!city) {
+                    throw std::runtime_error("Unknown city in ground_targets: '" + city_name +
+                        "' (see resources/data/major_cities.json for known names)");
+                }
+                gt.name    = getOrDefaultS(t, "name", city->name);
+                gt.lat_deg = city->lat_deg;
+                gt.lon_deg = city->lon_deg;
+            } else {
+                gt.name    = getOrDefaultS(t, "name",    "");
+                gt.lat_deg = getOrDefault(t,  "lat_deg", 0.0);
+                gt.lon_deg = getOrDefault(t,  "lon_deg", 0.0);
+            }
             gt.description = getOrDefaultS(t, "description", "");
             cfg.ground_targets.push_back(std::move(gt));
         }

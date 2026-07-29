@@ -20,6 +20,12 @@ struct SatelliteResult {
     int    seat_id{0};
     double time_in_sunlight_pct{0.0};  // [%]
     double time_in_eclipse_pct{0.0};   // [%]
+    double max_eclipse_duration_s{0.0}; // longest single continuous eclipse [s] -- worst-case power/thermal stress
+    double avg_solar_flux_wm2{0.0};    // mean incident solar flux [W/m^2], averaged over all time (0 while eclipsed)
+    double avg_solar_power_w{0.0};     // mean estimated array power [W] (idealized sun-tracking array, see PhysicalProperties)
+    double avg_beta_angle_deg{0.0};    // mean beta angle (sun vs. orbit plane) [deg]
+    double min_beta_angle_deg{0.0};    // [deg]
+    double max_beta_angle_deg{0.0};    // [deg]
     double avg_drag_accel_ms2{0.0};    // average drag acceleration [m/s^2]
     double total_drag_dv_ms{0.0};      // accumulated drag ΔV [m/s]
     double stationkeeping_dv_ms{0.0};  // SK ΔV actually spent (or drag-ΔV estimate if SK disabled) [m/s]
@@ -58,6 +64,8 @@ struct ConstellationResult {
 
     // Link budget (only populated if metrics.link_budget.enabled)
     double avg_datarate_mbps{0.0};   // mean achievable rate across ground targets, while visible
+
+    double avg_solar_power_w{0.0};   // mean estimated array power across the fleet [W]
 
     // Fleet averages
     double avg_drag_dv_ms{0.0};
@@ -145,6 +153,22 @@ private:
         int    alt_samples{0};
         double sk_dv_latest{0.0};   // mirrors Satellite::metrics().accumulated_sk_dv_ms
         int    sk_maneuvers_latest{0};
+
+        // Eclipse interval tracking (distinct from the sunlit_s/eclipse_s
+        // totals above, which only capture the aggregate fraction).
+        bool   in_eclipse{false};
+        double eclipse_start_s{0.0};
+        double max_eclipse_duration_s{0.0};
+
+        // Solar flux / power
+        double flux_sum_wm2{0.0};
+        double power_sum_w{0.0};
+
+        // Beta angle
+        double beta_sum_deg{0.0};
+        double beta_min_deg{1e9};
+        double beta_max_deg{-1e9};
+        int    beta_samples{0};
     };
     std::vector<SatAccum> sat_accum_;
     int num_satellites_{0};
@@ -163,6 +187,14 @@ private:
     double sample_timer_{0.0};
     int    coverage_samples_{0};
     double coverage_acc_{0.0};
+
+    // Inter-satellite spacing, sampled at the same (coverage) cadence: mean
+    // per-satellite nearest-neighbor distance, averaged across satellites
+    // and then across samples. O(N^2) per sample -- fine at coverage's
+    // already-reduced cadence, but keep sample_interval_s coarse for very
+    // large constellations.
+    double nn_sum_km_{0.0};
+    int    nn_samples_{0};
 
     void initGrid(double resolution_deg);
     void updateCoverage(const std::vector<Satellite*>& sats, double time_s);

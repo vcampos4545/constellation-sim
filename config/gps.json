@@ -1,0 +1,63 @@
+{
+  "simulation": {
+    "name": "GPS-like MEO Navigation Constellation",
+    "duration_days": 3.0,
+    "timestep_s": 60.0,
+    "epoch_jd": 2451545.0
+  },
+
+  "constellation": {
+    "type": "walker",
+    "altitude_km": 20200.0,
+    "inclination_deg": 55.0,
+    "total_satellites": 24,
+    "planes": 6,
+    "phasing_factor": 1
+  },
+
+  "satellite": {
+    "mass_kg": 2000.0,
+    "drag_coefficient": 2.2,
+    "drag_area_m2": 5.0,
+    "reflectivity": 1.5,
+    "srp_area_m2": 5.0
+  },
+
+  "forces": {
+    "gravity": true,
+    "j2": true,
+    "j3": true,
+    "j4": true,
+    "drag": false,
+    "srp": true,
+    "moon": true,
+    "sun_gravity": true
+  },
+
+  "metrics": {
+    "coverage": {
+      "enabled": true,
+      "min_elevation_deg": 10.0,
+      "grid_resolution_deg": 5.0,
+      "sample_interval_s": 600.0
+    },
+    "sunlight": true,
+    "drag": false,
+    "delta_v": true,
+    "revisit": true
+  },
+
+  "ground_targets": [
+    { "city": "Washington DC" },
+    { "city": "London" },
+    { "city": "Tokyo" },
+    { "city": "Sydney" },
+    { "city": "Nairobi" },
+    { "city": "Rio de Janeiro" }
+  ],
+
+  "output": {
+    "directory": "output",
+    "run_name": "gps"
+  }
+}

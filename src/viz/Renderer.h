@@ -20,6 +20,7 @@ public:
                       double                                    min_elevation_deg = 10.0,
                       std::vector<SimulationEngine::SatelliteInfo> sat_info = {},
                       double                                    epoch_jd = 2451545.0,
+                      PhysicalProperties                        satellite_props = {},
                       int width = 1280, int height = 720);
 
     // Blocks until the window is closed.

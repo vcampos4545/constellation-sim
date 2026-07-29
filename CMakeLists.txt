@@ -50,6 +50,7 @@ endif()
 set(CORE_SOURCES
   src/core/ConfigLoader.cpp
   src/core/SimulationEngine.cpp
+  src/core/CityData.cpp
 )
 
 set(ORBIT_SOURCES

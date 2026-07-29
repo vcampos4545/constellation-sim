@@ -24,6 +24,7 @@ inline constexpr double EARTH_FLATTENING    = 1.0 / 298.257223563;   // [-]
 inline constexpr double AU_M                = 1.495978707e11;        // [m]
 inline constexpr double GM_SUN              = 1.32712440018e20;      // [m^3/s^2]
 inline constexpr double SOLAR_PRESSURE_PA   = 4.56e-6;              // [N/m^2] at 1 AU
+inline constexpr double SOLAR_CONSTANT_WM2  = 1361.0;               // [W/m^2] at 1 AU (TSI)
 inline constexpr double SUN_RADIUS_M        = 6.957e8;              // [m]
 
 // Moon

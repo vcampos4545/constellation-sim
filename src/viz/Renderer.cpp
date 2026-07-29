@@ -7,12 +7,13 @@ Renderer::Renderer(std::shared_ptr<FrameQueue>               queue,
                    double                                    min_elevation_deg,
                    std::vector<SimulationEngine::SatelliteInfo> sat_info,
                    double                                    epoch_jd,
+                   PhysicalProperties                        satellite_props,
                    int width, int height)
     : queue_(std::move(queue))
 {
     sat_renderer_ = std::make_unique<SatelliteRenderer>(
         queue_, std::move(ground_targets), min_elevation_deg,
-        std::move(sat_info), epoch_jd, width, height);
+        std::move(sat_info), epoch_jd, satellite_props, width, height);
 }
 
 void Renderer::run() {

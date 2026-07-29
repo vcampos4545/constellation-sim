@@ -17,6 +17,13 @@ struct PhysicalProperties {
     double drag_area_m2     = 2.0;    // cross-sectional area for drag
     double reflectivity     = 1.3;    // Cr (solar radiation pressure coefficient)
     double srp_area_m2      = 2.0;    // area for SRP (may differ from drag area)
+
+    // Solar array, for the power-generation estimate (see MetricsCollector).
+    // Attitude isn't modeled in this project, so power assumes an idealized
+    // always-sun-tracking array (cos(incidence) = 1 whenever sunlit) -- a
+    // best-case bound, not a pointing-loss-aware estimate.
+    double solar_array_area_m2   = 4.0;   // total array area
+    double solar_array_efficiency = 0.30; // cell efficiency (0-1), ~0.30 typical for modern triple-junction GaAs
 };
 
 struct PhysicsConfig {

@@ -5,6 +5,7 @@
 #include <cmath>
 #include <algorithm>
 #include <numeric>
+#include <limits>
 
 MetricsCollector::MetricsCollector(const MetricsConfig& cfg, const SimConfig& sim_cfg)
     : cfg_(cfg), epoch_jd_(sim_cfg.epoch_jd)
@@ -63,19 +64,66 @@ void MetricsCollector::update(const std::vector<Satellite*>& sats, double time_s
 void MetricsCollector::updateSatMetrics(const std::vector<Satellite*>& sats, double dt) {
     if (dt <= 0.0) return;
 
-    const Vec3 sun_dir = SunModel::direction_eci(total_time_s_, epoch_jd_);
+    const double jd = epoch_jd_ + total_time_s_ / Constants::SEC_PER_DAY;
+    const Vec3 sun_pos = SunModel::position_eci(jd);
+    const Vec3 sun_dir = sun_pos.normalized();
+    // Satellite altitude (~10^3 km) is negligible next to the Sun-Earth
+    // distance (~1.5e8 km), so the Sun-to-satellite distance is well
+    // approximated by the Sun-to-Earth-center distance already in sun_pos.
+    const double sun_dist_m = sun_pos.norm();
+    const double flux_at_dist_wm2 = Constants::SOLAR_CONSTANT_WM2 *
+        (Constants::AU_M / sun_dist_m) * (Constants::AU_M / sun_dist_m);
 
     for (int i = 0; i < static_cast<int>(sats.size()); ++i) {
         const Satellite* sat = sats[i];
         auto& acc = sat_accum_[i];
 
         // Sunlight / eclipse
+        const bool eclipsed = EclipseModel::inEclipse(sat->state().position, sun_dir);
         if (cfg_.sunlight || cfg_.drag) {
-            const bool eclipsed = EclipseModel::inEclipse(sat->state().position, sun_dir);
             if (eclipsed) {
                 acc.eclipse_s += dt;
             } else {
                 acc.sunlit_s  += dt;
+            }
+        }
+
+        // Continuous-eclipse-interval tracking (worst-case power/thermal
+        // stress), independent of the cfg_.sunlight/cfg_.drag gate above.
+        if (eclipsed) {
+            if (!acc.in_eclipse) {
+                acc.in_eclipse = true;
+                acc.eclipse_start_s = total_time_s_;
+            }
+            acc.max_eclipse_duration_s = std::max(acc.max_eclipse_duration_s,
+                                                  total_time_s_ - acc.eclipse_start_s + dt);
+        } else {
+            acc.in_eclipse = false;
+        }
+
+        // Solar flux / power: idealized always-sun-tracking array (no
+        // attitude model in this project -- see PhysicalProperties).
+        {
+            const PhysicalProperties& p = sat->properties();
+            const double flux_wm2 = eclipsed ? 0.0 : flux_at_dist_wm2;
+            const double power_w  = flux_wm2 * p.solar_array_area_m2 * p.solar_array_efficiency;
+            acc.flux_sum_wm2 += flux_wm2;
+            acc.power_sum_w  += power_w;
+        }
+
+        // Beta angle: angle between the Sun vector and the orbit plane,
+        // i.e. the complement of the angle between the Sun vector and the
+        // orbit-normal (angular momentum) vector.
+        {
+            const Vec3 h = sat->state().position.cross(sat->state().velocity);
+            const double h_norm = h.norm();
+            if (h_norm > 0.0) {
+                const double sin_beta = std::clamp(h.dot(sun_dir) / h_norm, -1.0, 1.0);
+                const double beta_deg = std::asin(sin_beta) * Constants::RAD2DEG;
+                acc.beta_sum_deg += beta_deg;
+                acc.beta_min_deg = std::min(acc.beta_min_deg, beta_deg);
+                acc.beta_max_deg = std::max(acc.beta_max_deg, beta_deg);
+                ++acc.beta_samples;
             }
         }
 
@@ -143,6 +191,23 @@ void MetricsCollector::updateCoverage(const std::vector<Satellite*>& sats, doubl
     if (!grid_points_.empty()) {
         coverage_acc_ += static_cast<double>(covered_count) / grid_points_.size();
         ++coverage_samples_;
+    }
+
+    // ---- inter-satellite nearest-neighbor spacing ----
+    if (sats.size() > 1) {
+        const int n = static_cast<int>(sats.size());
+        double nn_sum_this_sample_km = 0.0;
+        for (int i = 0; i < n; ++i) {
+            double min_dist_m = std::numeric_limits<double>::max();
+            for (int j = 0; j < n; ++j) {
+                if (i == j) continue;
+                const double d = (sats[i]->state().position - sats[j]->state().position).norm();
+                min_dist_m = std::min(min_dist_m, d);
+            }
+            nn_sum_this_sample_km += min_dist_m / 1000.0;
+        }
+        nn_sum_km_ += nn_sum_this_sample_km / n;
+        ++nn_samples_;
     }
 
     // ---- per-ground-target access ----
@@ -227,6 +292,7 @@ ConstellationResult MetricsCollector::finalize(int run_id, const SimConfig& cfg)
     double fleet_annual_sk_dv = 0.0;
     double fleet_alt     = 0.0;
     double fleet_min_alt = 1e9;
+    double fleet_power_w = 0.0;
 
     for (int i = 0; i < num_satellites_; ++i) {
         auto& r = sat_results_[i];
@@ -251,6 +317,19 @@ ConstellationResult MetricsCollector::finalize(int run_id, const SimConfig& cfg)
         }
         r.avg_altitude_km      = (a.alt_samples > 0) ? a.alt_sum_km/a.alt_samples : 0.0;
         r.min_altitude_km      = a.min_alt_km;
+        r.max_eclipse_duration_s = a.max_eclipse_duration_s;
+
+        // Solar flux/power and beta angle share alt_samples' cadence (both
+        // are computed unconditionally every updateSatMetrics call).
+        if (a.alt_samples > 0) {
+            r.avg_solar_flux_wm2 = a.flux_sum_wm2 / a.alt_samples;
+            r.avg_solar_power_w  = a.power_sum_w  / a.alt_samples;
+        }
+        if (a.beta_samples > 0) {
+            r.avg_beta_angle_deg = a.beta_sum_deg / a.beta_samples;
+            r.min_beta_angle_deg = a.beta_min_deg;
+            r.max_beta_angle_deg = a.beta_max_deg;
+        }
 
         if (cfg.duration_days > 0.0) {
             r.annual_sk_dv_ms_per_year = r.stationkeeping_dv_ms * (365.25 / cfg.duration_days);
@@ -279,6 +358,7 @@ ConstellationResult MetricsCollector::finalize(int run_id, const SimConfig& cfg)
         fleet_annual_sk_dv += r.annual_sk_dv_ms_per_year;
         fleet_alt     += r.avg_altitude_km;
         fleet_min_alt  = std::min(fleet_min_alt, r.min_altitude_km);
+        fleet_power_w += r.avg_solar_power_w;
     }
 
     ConstellationResult cr;
@@ -298,6 +378,11 @@ ConstellationResult MetricsCollector::finalize(int run_id, const SimConfig& cfg)
         cr.avg_annual_sk_dv_ms_per_year = fleet_annual_sk_dv / num_satellites_;
         cr.avg_altitude_km = fleet_alt    / num_satellites_;
         cr.min_altitude_km = fleet_min_alt;
+        cr.avg_solar_power_w = fleet_power_w / num_satellites_;
+    }
+
+    if (nn_samples_ > 0) {
+        cr.avg_nearest_neighbor_km = nn_sum_km_ / nn_samples_;
     }
 
     // Coverage metrics

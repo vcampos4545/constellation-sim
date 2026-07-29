@@ -43,7 +43,9 @@ void OutputManager::writeSummaryRow(CsvWriter& w, const ConstellationResult& cr)
                 cr.avg_altitude_km,
                 cr.min_altitude_km,
                 cr.deployment_dv_per_sat_ms,
-                cr.avg_datarate_mbps);
+                cr.avg_datarate_mbps,
+                cr.avg_solar_power_w,
+                cr.avg_nearest_neighbor_km);
 }
 
 void OutputManager::writeRun(int run_id,
@@ -62,7 +64,7 @@ void OutputManager::writeRun(int run_id,
             "revisit_time_avg_s","revisit_time_max_s",
             "avg_drag_dv_ms","avg_sk_dv_ms","avg_annual_sk_dv_ms_per_year",
             "avg_sunlit_pct","avg_altitude_km","min_altitude_km",
-            "deployment_dv_per_sat_ms","avg_datarate_mbps"
+            "deployment_dv_per_sat_ms","avg_datarate_mbps","avg_solar_power_w","avg_nearest_neighbor_km"
         });
         summary_header_written_ = true;
     }
@@ -84,7 +86,7 @@ void OutputManager::writeRun(int run_id,
             "coverage_pct","revisit_time_avg_s","revisit_time_max_s",
             "avg_drag_dv_ms","avg_sk_dv_ms","avg_annual_sk_dv_ms_per_year",
             "avg_sunlit_pct","avg_altitude_km","min_altitude_km",
-            "deployment_dv_per_sat_ms","avg_datarate_mbps"
+            "deployment_dv_per_sat_ms","avg_datarate_mbps","avg_solar_power_w","avg_nearest_neighbor_km"
         });
         writeSummaryRow(w, cr);
     }
@@ -102,7 +104,9 @@ void OutputManager::writeSatelliteCsv(const std::string& path,
     CsvWriter w(path);
     w.writeHeader({
         "run_id","satellite_id","plane_id","seat_id",
-        "time_in_sunlight_pct","time_in_eclipse_pct",
+        "time_in_sunlight_pct","time_in_eclipse_pct","max_eclipse_duration_s",
+        "avg_solar_flux_wm2","avg_solar_power_w",
+        "avg_beta_angle_deg","min_beta_angle_deg","max_beta_angle_deg",
         "avg_drag_accel_ms2","total_drag_dv_ms",
         "stationkeeping_dv_ms","annual_sk_dv_ms_per_year","sk_maneuver_count",
         "avg_altitude_km","min_altitude_km",
@@ -110,7 +114,9 @@ void OutputManager::writeSatelliteCsv(const std::string& path,
     });
     for (const auto& s : sats) {
         w.writeRowV(s.run_id, s.sat_id, s.plane_id, s.seat_id,
-                    s.time_in_sunlight_pct, s.time_in_eclipse_pct,
+                    s.time_in_sunlight_pct, s.time_in_eclipse_pct, s.max_eclipse_duration_s,
+                    s.avg_solar_flux_wm2, s.avg_solar_power_w,
+                    s.avg_beta_angle_deg, s.min_beta_angle_deg, s.max_beta_angle_deg,
                     s.avg_drag_accel_ms2, s.total_drag_dv_ms,
                     s.stationkeeping_dv_ms, s.annual_sk_dv_ms_per_year, s.sk_maneuver_count,
                     s.avg_altitude_km,
@@ -238,7 +244,7 @@ void OutputManager::writeParetoFrontier(const std::vector<ConstellationResult>& 
         "coverage_pct","revisit_time_avg_s","revisit_time_max_s",
         "avg_drag_dv_ms","avg_sk_dv_ms","avg_annual_sk_dv_ms_per_year",
         "avg_sunlit_pct","avg_altitude_km","min_altitude_km",
-        "deployment_dv_per_sat_ms","avg_datarate_mbps"
+        "deployment_dv_per_sat_ms","avg_datarate_mbps","avg_solar_power_w","avg_nearest_neighbor_km"
     });
     for (const auto& cr : frontier) writeSummaryRow(w, cr);
 }

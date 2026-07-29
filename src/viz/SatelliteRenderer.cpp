@@ -3,6 +3,8 @@
 #include "viz/SatelliteRenderer.h"
 #include "core/math/Constants.h"
 #include "environment/EarthModel.h"
+#include "environment/SunModel.h"
+#include "orbit/OrbitalElements.h"
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
 #include <imgui.h>
@@ -26,6 +28,7 @@ SatelliteRenderer::SatelliteRenderer(std::shared_ptr<FrameQueue> queue,
                                      double min_elevation_deg,
                                      std::vector<SimulationEngine::SatelliteInfo> sat_info,
                                      double epoch_jd,
+                                     PhysicalProperties satellite_props,
                                      int window_w, int window_h)
     : queue_(std::move(queue)),
       sat_info_(std::move(sat_info)),
@@ -35,7 +38,8 @@ SatelliteRenderer::SatelliteRenderer(std::shared_ptr<FrameQueue> queue,
       min_elev_sin_(static_cast<float>(std::sin(min_elevation_deg * Constants::DEG2RAD))),
       min_elevation_rad_(min_elevation_deg * Constants::DEG2RAD),
       min_elev_deg_ui_(static_cast<float>(min_elevation_deg)),
-      epoch_jd_(epoch_jd)
+      epoch_jd_(epoch_jd),
+      satellite_props_(satellite_props)
 {
     gui_.camera
         .setFOV(45.0f)
@@ -60,6 +64,25 @@ SatelliteRenderer::SatelliteRenderer(std::shared_ptr<FrameQueue> queue,
 
     earth_tex_.loadFromFile("resources/textures/earth.jpg");
     star_tex_.loadFromFile("resources/textures/stars.jpg");
+
+    // Loaded once here at window/sim startup, not per-frame or per-selection.
+    if (satellite_mesh_.load("resources/models/satellite/satellite.obj"))
+    {
+        // Fit the model (authored in arbitrary units) to roughly the same
+        // on-screen footprint as the old box marker, regardless of scale.
+        const glm::vec3 bmin = satellite_mesh_.getBoundsMin();
+        const glm::vec3 bmax = satellite_mesh_.getBoundsMax();
+        const glm::vec3 extent = bmax - bmin;
+        const float max_extent = std::max({extent.x, extent.y, extent.z});
+        constexpr float kTargetSceneSize = 0.014f;
+        satellite_model_scale_ = (max_extent > 0.0f) ? (kTargetSceneSize / max_extent) : 1.0f;
+    }
+    else
+    {
+        std::fprintf(stderr, "Warning: failed to load resources/models/satellite/satellite.obj (%s); "
+                             "falling back to a plain box marker.\n",
+                     satellite_mesh_.getError().c_str());
+    }
 
     for (const auto &gt : ground_targets)
     {
@@ -436,13 +459,9 @@ void SatelliteRenderer::drawStarBackground()
     static const glm::quat STAR_BASE_ROT =
         glm::angleAxis(-glm::half_pi<float>(), glm::vec3(1.0f, 0.0f, 0.0f));
 
-    // Center the sphere on the camera so stars track the view with no parallax.
-    // Disable depth writes so the background never occludes scene objects.
-    glDepthMask(GL_FALSE);
-    gui_.setLighting(false);
-    gui_.drawTexturedSphere(gui_.camera.position, 100.0f, STAR_BASE_ROT, star_tex_);
-    gui_.setLighting(true);
-    glDepthMask(GL_TRUE);
+    // drawBackground strips view translation (so stars track the camera with
+    // no parallax) and disables depth writes/lighting internally.
+    gui_.drawBackground(star_tex_, STAR_BASE_ROT);
 }
 
 void SatelliteRenderer::drawEarth()
@@ -459,9 +478,10 @@ void SatelliteRenderer::drawEarth()
         EarthModel::gmst_rad(epoch_jd_ + pb_.sim_time_s / Constants::SEC_PER_DAY));
     const glm::quat sidereal_rot = glm::angleAxis(gmst_f, glm::vec3(0.0f, 0.0f, 1.0f));
 
-    gui_.setLightDirection(interp_sun_);
+    gui_.setLighting(false);
     gui_.drawTexturedSphere({0.0f, 0.0f, 0.0f}, EARTH_DISPLAY_R,
                             sidereal_rot * EARTH_BASE_ROT, earth_tex_);
+    gui_.setLighting(true);
 }
 
 void SatelliteRenderer::drawSunIndicator()
@@ -500,13 +520,22 @@ void SatelliteRenderer::drawSatellites()
         gui_.drawSphere(interp_pos_[i], SAT_DOT_R, col);
     }
 
-    // --- Selected satellite: selection halo + lit cube ---
+    // --- Selected satellite: lit 3D model (no attitude data, so drawn at a
+    // fixed identity orientation -- not a claim about the real attitude) ---
     if (selected_sat_idx_ >= 0 && selected_sat_idx_ < n)
     {
         const int idx = selected_sat_idx_;
-        static constexpr glm::vec3 SAT_BOX{0.010f, 0.010f, 0.005f};
         gui_.setLighting(true);
-        gui_.drawBox(interp_pos_[idx], SAT_BOX, glm::quat(1.0f, 0.0f, 0.0f, 0.0f), {0.85f, 0.92f, 1.0f});
+        if (satellite_mesh_.isLoaded())
+        {
+            gui_.drawOBJMesh(satellite_mesh_, interp_pos_[idx],
+                             glm::vec3(satellite_model_scale_), glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+        }
+        else
+        {
+            static constexpr glm::vec3 SAT_BOX{0.010f, 0.010f, 0.005f};
+            gui_.drawBox(interp_pos_[idx], SAT_BOX, glm::quat(1.0f, 0.0f, 0.0f, 0.0f), {0.85f, 0.92f, 1.0f});
+        }
     }
 
     gui_.setLighting(true);
@@ -544,6 +573,43 @@ void SatelliteRenderer::drawTrails()
             gui_.drawLine(buf.back(), interp_pos_[s],
                           is_selected ? glm::vec3{0.0f, 0.85f, 1.0f} : glm::vec3{0.2f, 0.8f, 0.3f},
                           is_selected ? 1.5f : 1.0f);
+    }
+    gui_.setLighting(true);
+}
+
+// Ghost path for the selected satellite: the analytic two-body ellipse
+// through its current osculating state. Unlike the true numerically-
+// integrated trajectory, this ignores J2/drag/SRP/third-body, so it's only
+// accurate for roughly the upcoming orbit -- exactly the "where's it headed
+// next" question a predicted path answers. It's a fixed ellipse in the
+// (inertial) ECI frame, so it doesn't need to be recomputed every frame from
+// scratch conceptually, but it's cheap enough (one closed line loop) to just
+// redraw each frame from the latest osculating state, which also keeps it
+// current as the true orbit precesses.
+void SatelliteRenderer::drawPredictedPath()
+{
+    if (selected_sat_idx_ < 0 || selected_sat_idx_ >= (int)interp_pos_eci_.size())
+        return;
+
+    const int idx = selected_sat_idx_;
+    const OrbitState state{interp_pos_eci_[idx], interp_vel_eci_[idx], 0.0};
+    OrbitalElements elems = OrbitalElements::fromStateVector(state, Constants::GM_EARTH);
+    if (elems.ecc >= 1.0 || !(elems.sma > 0.0))
+        return; // not a closed ellipse (shouldn't happen for this project's orbits)
+
+    constexpr int N = 128;
+    constexpr float PI2 = static_cast<float>(Constants::TWO_PI);
+
+    gui_.setLighting(false);
+    glm::vec3 prev{};
+    for (int i = 0; i <= N; ++i)
+    {
+        elems.ta = PI2 * i / N;
+        const OrbitState pt_state = elems.toStateVector(Constants::GM_EARTH);
+        const glm::vec3 pt = eciToScene(pt_state.position);
+        if (i > 0)
+            gui_.drawLine(prev, pt, {0.55f, 0.85f, 1.00f}, 1.0f);
+        prev = pt;
     }
     gui_.setLighting(true);
 }
@@ -718,6 +784,61 @@ void SatelliteRenderer::drawHUD()
 }
 
 // ---------------------------------------------------------------------------
+// Scrollable satellite name-button list, pinned to the left edge. Deliberately
+// not a normal ImGui window: no background/title/border, just individual
+// buttons directly over the 3D scene, so it stays out of the way of the view
+// it's floating over. Clicking a button selects that satellite, same as
+// clicking its dot in the 3D scene. Hidden once a satellite is selected (the
+// telemetry panel takes over the left side then).
+// ---------------------------------------------------------------------------
+void SatelliteRenderer::drawSatelliteListOverlay()
+{
+    const int n = std::min(static_cast<int>(interp_pos_.size()), static_cast<int>(sat_info_.size()));
+    if (n == 0)
+        return;
+
+    const ImGuiIO &io = ImGui::GetIO();
+    constexpr float kListWidth = 110.0f;
+    constexpr float kTopOffset = 46.0f;  // below the HUD line
+    constexpr float kButtonH   = 22.0f;
+    constexpr float kSpacing   = 2.0f;
+
+    ImGui::SetNextWindowPos({0.0f, kTopOffset});
+    ImGui::SetNextWindowSize({kListWidth, io.DisplaySize.y - kTopOffset});
+    ImGui::SetNextWindowBgAlpha(0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4.0f, 4.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, kSpacing));
+    ImGui::Begin("##sat_list", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings |
+                     ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoFocusOnAppearing |
+                     ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoBackground);
+
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.05f, 0.08f, 0.14f, 0.45f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.0f, 0.35f, 0.7f, 0.75f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.0f, 0.45f, 0.85f, 0.85f));
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.85f, 0.90f, 0.95f, 0.95f));
+
+    ImGuiListClipper clipper;
+    clipper.Begin(n, kButtonH + kSpacing);
+    while (clipper.Step())
+    {
+        for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i)
+        {
+            char label[32];
+            std::snprintf(label, sizeof(label), "SAT-%03d", sat_info_[i].id);
+            ImGui::PushID(i);
+            if (ImGui::Button(label, {kListWidth - 8.0f, kButtonH}))
+                selected_sat_idx_ = i;
+            ImGui::PopID();
+        }
+    }
+
+    ImGui::PopStyleColor(4);
+    ImGui::End();
+    ImGui::PopStyleVar(2);
+}
+
+// ---------------------------------------------------------------------------
 // Combined satellite data panel — full-height left panel in split-screen mode
 // ---------------------------------------------------------------------------
 void SatelliteRenderer::drawSatellitePanel()
@@ -757,14 +878,40 @@ void SatelliteRenderer::drawSatellitePanel()
         std::atan2(ecef_y, ecef_x) * Constants::RAD2DEG);
 
     const double speed_kms = vel.norm() / 1000.0;
-    const double period_min = (Constants::TWO_PI * std::sqrt(r * r * r / Constants::GM_EARTH)) / 60.0;
+
+    // Full osculating Keplerian elements (replaces the old inclination-only,
+    // instantaneous-radius period calc, which was wrong for eccentric orbits
+    // since period depends on the semi-major axis, not the current radius).
+    const OrbitState kepler_state{pos, vel, 0.0};
+    const OrbitalElements elems = OrbitalElements::fromStateVector(kepler_state, Constants::GM_EARTH);
+    const double period_min   = elems.period_s(Constants::GM_EARTH) / 60.0;
+    const double mean_motion_rev_day = elems.meanMotion_rads(Constants::GM_EARTH)
+                                       * Constants::SEC_PER_DAY / Constants::TWO_PI;
+    const double inc_deg  = elems.inc  * Constants::RAD2DEG;
+    const double raan_deg = elems.raan * Constants::RAD2DEG;
+    const double aop_deg  = elems.aop  * Constants::RAD2DEG;
+    const double ta_deg   = elems.ta   * Constants::RAD2DEG;
+    const double apogee_km  = (elems.sma * (1.0 + elems.ecc) - R_m) / 1000.0;
+    const double perigee_km = (elems.sma * (1.0 - elems.ecc) - R_m) / 1000.0;
+
+    // Sun geometry: real Sun-Earth distance (for flux) and beta angle
+    // (angle between the Sun vector and the orbit plane).
+    const double jd = epoch_jd_ + pb_.sim_time_s / Constants::SEC_PER_DAY;
+    const Vec3 sun_pos_m = SunModel::position_eci(jd);
+    const Vec3 sun_dir = sun_pos_m.normalized();
+    const double sun_dist_m = sun_pos_m.norm();
+    const double flux_wm2 = Constants::SOLAR_CONSTANT_WM2 *
+        (Constants::AU_M / sun_dist_m) * (Constants::AU_M / sun_dist_m);
     const Vec3 h_orb = pos.cross(vel);
     const double h_norm_val = h_orb.norm();
-    const double inc_deg = (h_norm_val > 0.0)
-                               ? std::acos(std::clamp(h_orb.z / h_norm_val, -1.0, 1.0)) * Constants::RAD2DEG
-                               : 0.0;
+    const double beta_deg = (h_norm_val > 0.0)
+        ? std::asin(std::clamp(h_orb.dot(sun_dir) / h_norm_val, -1.0, 1.0)) * Constants::RAD2DEG
+        : 0.0;
 
     const bool in_ecl = (idx < (int)interp_ecl_.size()) && interp_ecl_[idx];
+
+    const double power_w = in_ecl ? 0.0
+        : flux_wm2 * satellite_props_.solar_array_area_m2 * satellite_props_.solar_array_efficiency;
 
     // ── Ground track update ───────────────────────────────────────────────
     ground_track_.push_back({lat_deg, lon_deg});
@@ -893,16 +1040,104 @@ void SatelliteRenderer::drawSatellitePanel()
     {
         ImGui::TextColored({0.5f, 0.7f, 1.0f, 1.0f}, "ELECTRICAL POWER SYSTEM");
         ImGui::Spacing();
-        ImGui::TextDisabled("No power telemetry available.");
+        ImGui::TextDisabled("Idealized always-sun-tracking array (no attitude model);");
+        ImGui::TextDisabled("pointing losses/degradation not modeled.");
+        ImGui::Spacing();
+
+        ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+        if (ImGui::CollapsingHeader("SOLAR GENERATION"))
+        {
+            ImGui::Columns(2, "power_cols", false);
+            ImGui::SetColumnWidth(0, col0);
+
+            ImGui::TextDisabled("Status");
+            ImGui::NextColumn();
+            if (in_ecl)
+                ImGui::TextColored({0.55f, 0.60f, 0.90f, 1.0f}, "ECLIPSE (0 W)");
+            else
+                ImGui::TextColored({1.00f, 0.85f, 0.25f, 1.0f}, "SUNLIT");
+            ImGui::NextColumn();
+
+            ImGui::TextDisabled("Incident flux");
+            ImGui::NextColumn();
+            ImGui::Text("%.1f W/m^2", in_ecl ? 0.0 : flux_wm2);
+            ImGui::NextColumn();
+
+            ImGui::TextDisabled("Array area");
+            ImGui::NextColumn();
+            ImGui::Text("%.2f m^2", satellite_props_.solar_array_area_m2);
+            ImGui::NextColumn();
+
+            ImGui::TextDisabled("Array efficiency");
+            ImGui::NextColumn();
+            ImGui::Text("%.0f %%", satellite_props_.solar_array_efficiency * 100.0);
+            ImGui::NextColumn();
+
+            ImGui::TextDisabled("Est. array power");
+            ImGui::NextColumn();
+            ImGui::Text("%.1f W", power_w);
+            ImGui::NextColumn();
+
+            ImGui::Columns(1);
+        }
+
+        ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+        if (ImGui::CollapsingHeader("SUN GEOMETRY"))
+        {
+            ImGui::Columns(2, "sun_geom_cols", false);
+            ImGui::SetColumnWidth(0, col0);
+
+            ImGui::TextDisabled("Beta angle");
+            ImGui::NextColumn();
+            ImGui::Text("%+.2f deg", beta_deg);
+            ImGui::NextColumn();
+
+            ImGui::Columns(1);
+        }
         break;
     }
 
     // ══════════════════════════════════════════════════════════════════════
     case PanelTab::Thermal:
     {
-        ImGui::TextColored({0.5f, 0.7f, 1.0f, 1.0f}, "THERMAL CONTROL");
+        ImGui::TextColored({0.5f, 0.7f, 1.0f, 1.0f}, "THERMAL CYCLING CONTEXT");
         ImGui::Spacing();
-        ImGui::TextDisabled("No thermal telemetry available.");
+        ImGui::TextDisabled("No thermal model in this project -- these are the eclipse-");
+        ImGui::TextDisabled("cycle drivers of thermal stress, not simulated temperatures.");
+        ImGui::Spacing();
+
+        ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+        if (ImGui::CollapsingHeader("ECLIPSE CYCLING"))
+        {
+            ImGui::Columns(2, "thermal_cols", false);
+            ImGui::SetColumnWidth(0, col0);
+
+            ImGui::TextDisabled("Status");
+            ImGui::NextColumn();
+            if (in_ecl)
+                ImGui::TextColored({0.55f, 0.60f, 0.90f, 1.0f}, "ECLIPSE (cooling)");
+            else
+                ImGui::TextColored({1.00f, 0.85f, 0.25f, 1.0f}, "SUNLIT (heating)");
+            ImGui::NextColumn();
+
+            ImGui::TextDisabled("Beta angle");
+            ImGui::NextColumn();
+            ImGui::Text("%+.2f deg", beta_deg);
+            ImGui::NextColumn();
+
+            ImGui::TextDisabled("Orbital period");
+            ImGui::NextColumn();
+            ImGui::Text("%.2f min (1 thermal cycle/orbit)", period_min);
+            ImGui::NextColumn();
+
+            ImGui::Columns(1);
+        }
+
+        ImGui::Spacing();
+        ImGui::TextWrapped(
+            "Higher |beta| shortens or eliminates eclipse (less thermal cycling, "
+            "steadier sun exposure); beta angles near 0 deg give the longest, "
+            "most frequent eclipses -- the most demanding case for thermal design.");
         break;
     }
 
@@ -954,11 +1189,50 @@ void SatelliteRenderer::drawSatellitePanel()
             ImGui::NextColumn();
             ImGui::TextDisabled("Period");
             ImGui::NextColumn();
-            ImGui::Text("%.1f min", period_min);
+            ImGui::Text("%.2f min", period_min);
+            ImGui::NextColumn();
+            ImGui::TextDisabled("Mean motion");
+            ImGui::NextColumn();
+            ImGui::Text("%.4f rev/day", mean_motion_rev_day);
+            ImGui::NextColumn();
+            ImGui::TextDisabled("Apogee / Perigee");
+            ImGui::NextColumn();
+            ImGui::Text("%.1f / %.1f km", apogee_km, perigee_km);
+            ImGui::NextColumn();
+
+            ImGui::Columns(1);
+        }
+
+        // Keplerian elements
+        ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+        if (ImGui::CollapsingHeader("ELEMENTS"))
+        {
+            ImGui::Columns(2, "elem_cols", false);
+            ImGui::SetColumnWidth(0, col0);
+
+            ImGui::TextDisabled("Semi-major axis");
+            ImGui::NextColumn();
+            ImGui::Text("%.1f km", elems.sma / 1000.0);
+            ImGui::NextColumn();
+            ImGui::TextDisabled("Eccentricity");
+            ImGui::NextColumn();
+            ImGui::Text("%.5f", elems.ecc);
             ImGui::NextColumn();
             ImGui::TextDisabled("Inclination");
             ImGui::NextColumn();
-            ImGui::Text("%.2f deg", inc_deg);
+            ImGui::Text("%.3f deg", inc_deg);
+            ImGui::NextColumn();
+            ImGui::TextDisabled("RAAN");
+            ImGui::NextColumn();
+            ImGui::Text("%.3f deg", raan_deg);
+            ImGui::NextColumn();
+            ImGui::TextDisabled("Arg. of perigee");
+            ImGui::NextColumn();
+            ImGui::Text("%.3f deg", aop_deg);
+            ImGui::NextColumn();
+            ImGui::TextDisabled("True anomaly");
+            ImGui::NextColumn();
+            ImGui::Text("%.3f deg", ta_deg);
             ImGui::NextColumn();
 
             ImGui::Columns(1);
@@ -1253,6 +1527,11 @@ void SatelliteRenderer::run()
         if (sat_view)
             glViewport(scene_x_fb, 0, scene_w_fb, fh);
 
+        // Earth itself renders unlit (see drawEarth), but other lit objects
+        // drawn later this frame (e.g. the selected-satellite cube) still
+        // want the light direction tracking the sun.
+        gui_.setLightDirection(interp_sun_);
+
         drawStarBackground();
         drawEarth();
         drawCoverageFootprint();
@@ -1263,6 +1542,7 @@ void SatelliteRenderer::run()
             drawSunIndicator();
             drawMoonIndicator();
             drawTrails();
+            drawPredictedPath();
             drawSatellites();
             drawGroundLinks();
         }
@@ -1273,7 +1553,10 @@ void SatelliteRenderer::run()
 
         // ── ImGui overlays ────────────────────────────────────────────────
         if (!sat_view)
-            drawHUD();        // HUD only shown when no satellite selected
+        {
+            drawHUD();                  // HUD only shown when no satellite selected
+            drawSatelliteListOverlay(); // likewise -- telemetry panel takes over once selected
+        }
         drawSatellitePanel(); // combined left panel (no-op when none selected)
         drawAxesOverlay();    // ECI axes widget, repositioned in split mode
 
