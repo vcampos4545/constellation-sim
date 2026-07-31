@@ -1,5 +1,6 @@
 #include "environment/EclipseModel.h"
 #include "core/math/Constants.h"
+#include <algorithm>
 #include <cmath>
 
 bool EclipseModel::inEclipse(const Vec3& sat_pos_eci, const Vec3& sun_dir_eci) {

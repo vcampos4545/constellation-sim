@@ -1,5 +1,6 @@
 #include "orbit/OrbitalElements.h"
 #include "core/math/Constants.h"
+#include <algorithm>
 #include <cmath>
 #include <stdexcept>
 

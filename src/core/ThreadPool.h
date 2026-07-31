@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <vector>
 #include <queue>
 #include <thread>
@@ -7,6 +8,7 @@
 #include <condition_variable>
 #include <functional>
 #include <future>
+#include <memory>
 #include <atomic>
 #include <stdexcept>
 

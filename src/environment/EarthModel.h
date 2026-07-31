@@ -1,6 +1,7 @@
 #pragma once
 #include "core/math/Constants.h"
 #include "core/math/Vec3.h"
+#include <algorithm>
 
 // Utility functions for Earth geometry and coordinate transformations.
 // Uses a spherical Earth with WGS84 constants for radius and rotation rate.
